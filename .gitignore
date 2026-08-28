@@ -1,0 +1,6 @@
+build/
+runs/
+loop.log
+*.vcd
+*.fst
+.DS_Store

@@ -1,0 +1,3 @@
+lib/riscv_assembly.v and rtl/emitter_uart.v are taken unmodified from
+https://github.com/BrunoLevy/learn-fpga (FemtoRV/TUTORIALS/FROM_BLINKER_TO_RISCV)
+Copyright (c) 2020, Bruno Levy — BSD 3-Clause License.

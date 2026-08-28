@@ -1,0 +1,9 @@
+# Lattice iCEstick (iCE40HX1K-TQ144). Port names must match rtl/soc.v exactly.
+set_io CLK     21   # 12 MHz oscillator
+set_io LEDS[0] 99   # D1 (red)
+set_io LEDS[1] 98   # D2 (red)
+set_io LEDS[2] 97   # D3 (red)
+set_io LEDS[3] 96   # D4 (red)
+set_io LEDS[4] 95   # D5 (green, centre)
+set_io TXD     8    # FPGA -> FTDI channel B (host sees /dev/cu.usbserial-*1)
+set_io RXD     9    # FTDI channel B -> FPGA
