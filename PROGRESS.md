@@ -33,3 +33,15 @@ the next session needs to know, not what it can read from the code.
   lui → rs1=rs2=31, funct7=127). Next (part 2): immediates are already driven — bench-only
   work; extend `check_vec` with the five expected immediates per vector and add the task's
   positive/negative I/S/U vectors.
+- **Decoder, part 2** (task 4): bench-only again (decoder already drove all five immediates).
+  `check_vec` now takes eI/eS/eB/eU/eJ and checks all five immediate outputs on every vector;
+  14 vectors (added addi -1, lw -8, sw +16, lui 0x12345 for bit-31-clear U) × 20 checks + 1
+  illegal = 281, total 535. New hand encodings: lw x3,-8(x2) = 0xFF812183, sw x2,16(x1) =
+  0x0020A823. Surprise: hand bit-slicing kept misaligning (nibble→bit-index slips), so the
+  expected constants were computed by applying the spec formulas to the hand-encoded words
+  with a throwaway python bit-slicer, anchored against the task text's own named values
+  (Iimm=-1, Simm=-4, Uimm=0xFFFFF000, Jimm=16, Bimm=8, Iimm=64) and part-1's field checks —
+  all matched, and sim passed first run. Advice: for part 3, reuse the same python slicer to
+  pre-compute B/J immediate expectations, then do the assembler round-trip (RType..JType from
+  lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a `MEM`-bearing
+  module to include into.
