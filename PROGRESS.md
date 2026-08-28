@@ -43,5 +43,16 @@ the next session needs to know, not what it can read from the code.
   (Iimm=-1, Simm=-4, Uimm=0xFFFFF000, Jimm=16, Bimm=8, Iimm=64) and part-1's field checks —
   all matched, and sim passed first run. Advice: for part 3, reuse the same python slicer to
   pre-compute B/J immediate expectations, then do the assembler round-trip (RType..JType from
-  lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a `MEM`-bearing
-  module to include into.
+lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a `MEM`-bearing
+   module to include into.
+- **Decoder, part 3** (task 5): bench-only again. Added 5 hand vectors (fwd bne +16, back bne -8
+  and beq -8 = 0xFE209CE3/0xFE208CE3, back jal x0,-8 = 0xFF9FF06F, edge jal x1,4094 = 0x7FF000EF
+  with imm[11]=1/imm[20]=0) + assembler round trip: `reg [31:0] MEM[0:15]` + lib include at
+  module level, six RType..JType calls, each word first CHECK_EQ'd against the hand encoding,
+  then run through check_vec. 761 checks total, pnr unchanged (91 LCs).
+  Surprises: (1) the "jal x1,2046" word I first built was really jal x1,4094 — 0x7FF000EF has
+  imm[11]=1; kept it as the swap-edge test; (2) two FAILs from transcribing funct3=000 for
+  0xFF9FF06F where bits[14:12]=111 — the python slicer had it right, I overrode it by eye.
+  Advice: trust the slicer output verbatim, never re-derive fields by hand. The lib include
+  resolves via the Makefile's `-I lib`; it needs `MEM` + brings its own `memPC` (assign it
+  before generating). Next task is the ALU (rtl/alu.v) — first new RTL module since Memory.

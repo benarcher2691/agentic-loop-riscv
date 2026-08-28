@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 `default_nettype none
-// Decoder parts 1+2: opcode classes, register/funct fields, and immediates.
+// Decoder parts 1+2+3: opcode classes, register/funct fields, and immediates.
 // Hand-encoded instructions covering every RV32I opcode class. Every vector
 // checks all ten class flags (exactly one high), rs1/rs2/rd/funct3/funct7,
 // and ALL FIVE immediate outputs.
@@ -34,6 +34,13 @@ module decoder_tb;
                .rs1Id(rs1Id), .rs2Id(rs2Id), .rdId(rdId),
                .funct3(funct3), .funct7(funct7),
                .Iimm(Iimm), .Simm(Simm), .Bimm(Bimm), .Uimm(Uimm), .Jimm(Jimm));
+
+  // ---- Assembler cross-check (decoder part 3) ----
+  // One word per class is built with the lib/riscv_assembly.v encoder tasks
+  // (spec packing), then fed through the Decoder: it must recover the fields
+  // and immediates that were passed in. MEM is required by the lib include.
+  reg [31:0] MEM [0:15];
+  `include "riscv_assembly.v"
 
   // Drive one word, then check the one-hot class flags (exactly flag `c` is
   // high, c = 0..9 in the order below), the register ids, the funct fields,
@@ -109,6 +116,20 @@ module decoder_tb;
     check_vec(32'h00208463, 2, 5'd1, 5'd2, 5'd8, 3'b000, 7'b0000000,
               32'h00000002, 32'h00000008, 32'h00000008, 32'h00208000, 32'h00008002);
 
+    // BRANCH forward bne: bne x1,x2,16 -> Bimm = 16.
+    // rd field overlaps imm[4:1|11] = 10000 = 16.
+    check_vec(32'h00209863, 2, 5'd1, 5'd2, 5'd16, 3'b001, 7'b0000000,
+              32'h00000002, 32'h00000010, 32'h00000010, 32'h00209000, 32'h00009002);
+
+    // BRANCH backward bne: bne x1,x2,-8 -> Bimm = 32'hFFFFFFF8 (-8).
+    // imm[12]=imm[11]=1, imm[10:5]=111111, imm[4:1]=1100 -> rd field = 11001 = 25.
+    check_vec(32'hFE209CE3, 2, 5'd1, 5'd2, 5'd25, 3'b001, 7'b1111111,
+              32'hFFFFFFE2, 32'hFFFFFFF9, 32'hFFFFFFF8, 32'hFE209000, 32'hFFF097E2);
+
+    // BRANCH backward beq: beq x1,x2,-8 -> Bimm = 32'hFFFFFFF8 (-8).
+    check_vec(32'hFE208CE3, 2, 5'd1, 5'd2, 5'd25, 3'b000, 7'b1111111,
+              32'hFFFFFFE2, 32'hFFFFFFF9, 32'hFFFFFFF8, 32'hFE208000, 32'hFFF087E2);
+
     // JALR: jalr x5,x6,64 -> Iimm = 64.
     // rs2 = imm[4:0] = 0, funct7 = imm[11:5] = 0000010 = 2.
     check_vec(32'h040302E7, 3, 5'd6, 5'd0, 5'd5, 3'b000, 7'b0000010,
@@ -118,6 +139,16 @@ module decoder_tb;
     // rs1 = 0; rs2 overlaps imm bits = 10000 = 16; funct7 = imm[19:12] high bit = 0.
     check_vec(32'h010000EF, 4, 5'd0, 5'd16, 5'd1, 3'b000, 7'b0000000,
               32'h00000010, 32'h00000001, 32'h00000800, 32'h01000000, 32'h00000010);
+
+    // JAL backward: jal x0,-8 -> Jimm = 32'hFFFFFFF8 (-8).
+    // imm[20]=imm[11]=1, imm[10:1]=1111111100, imm[19:12]=11111111.
+    check_vec(32'hFF9FF06F, 4, 5'd31, 5'd25, 5'd0, 3'b111, 7'b1111111,
+              32'hFFFFFFF9, 32'hFFFFFFE0, 32'hFFFFF7E0, 32'hFF9FF000, 32'hFFFFFFF8);
+
+    // JAL edge: jal x1,4094 -> Jimm = 32'h00000FFE. imm[11]=1 but imm[20]=0:
+    // a decoder that swaps these two J-imm bits would sign-extend wrongly.
+    check_vec(32'h7FF000EF, 4, 5'd0, 5'd31, 5'd1, 3'b000, 7'b0111111,
+              32'h000007FF, 32'h000007E1, 32'h00000FE0, 32'h7FF00000, 32'h00000FFE);
 
     // AUIPC: auipc x5,0x12345 -> Uimm = 0x12345000.
     // U-type: rs1/rs2/funct3/funct7 are raw immediate bits, not registers.
@@ -137,6 +168,35 @@ module decoder_tb;
     // rs2 field overlaps the imm12 low bits = 1.
     check_vec(32'h00100073, 9, 5'd0, 5'd1, 5'd0, 3'b000, 7'b0000000,
               32'h00000001, 32'h00000000, 32'h00000000, 32'h00100000, 32'h00000800);
+
+    // ---- Assembler round trip: build with the lib, decode, compare ----
+    // First tie each generated word to the independently hand-encoded word
+    // used above (same instruction), then run the full check_vec on it.
+    memPC = 0;
+    RType (7'b0110011, 5'd3, 5'd1, 5'd2, 3'b000, 7'b0000000);  // add  x3,x1,x2
+    IType (7'b0010011, 5'd1, 5'd0, 32'hFFFFFFFF, 3'b000);      // addi x1,x0,-1
+    SType (7'b0100011, 5'd1, 5'd2, 32'hFFFFFFFC, 3'b010);      // sw   x2,-4(x1)
+    BType (7'b1100011, 5'd1, 5'd2, 32'hFFFFFFF8, 3'b001);      // bne  x1,x2,-8
+    UType (7'b0110111, 5'd5, 32'hFFFFF000);                    // lui  x5,0xFFFFF
+    JType (7'b1101111, 5'd0, 32'hFFFFFFF8);                    // jal  x0,-8
+    `CHECK_EQ(MEM[0], 32'h002081B3, "asm RType add x3,x1,x2")
+    `CHECK_EQ(MEM[1], 32'hFFF00093, "asm IType addi x1,x0,-1")
+    `CHECK_EQ(MEM[2], 32'hFE20AE23, "asm SType sw x2,-4(x1)")
+    `CHECK_EQ(MEM[3], 32'hFE209CE3, "asm BType bne x1,x2,-8")
+    `CHECK_EQ(MEM[4], 32'hFFFFF2B7, "asm UType lui x5,0xFFFFF")
+    `CHECK_EQ(MEM[5], 32'hFF9FF06F, "asm JType jal x0,-8")
+    check_vec(MEM[0], 0, 5'd1,  5'd2,  5'd3,  3'b000, 7'b0000000,
+              32'h00000002, 32'h00000003, 32'h00000802, 32'h00208000, 32'h00008002);
+    check_vec(MEM[1], 1, 5'd0,  5'd31, 5'd1,  3'b000, 7'b1111111,
+              32'hFFFFFFFF, 32'hFFFFFFE1, 32'hFFFFFFE0, 32'hFFF00000, 32'hFFF00FFE);
+    check_vec(MEM[2], 8, 5'd1,  5'd2,  5'd28, 3'b010, 7'b1111111,
+              32'hFFFFFFE2, 32'hFFFFFFFC, 32'hFFFFF7FC, 32'hFE20A000, 32'hFFF0A7E2);
+    check_vec(MEM[3], 2, 5'd1,  5'd2,  5'd25, 3'b001, 7'b1111111,
+              32'hFFFFFFE2, 32'hFFFFFFF9, 32'hFFFFFFF8, 32'hFE209000, 32'hFFF097E2);
+    check_vec(MEM[4], 6, 5'd31, 5'd31, 5'd5,  3'b111, 7'b1111111,
+              32'hFFFFFFFF, 32'hFFFFFFE5, 32'hFFFFFFE4, 32'hFFFFF000, 32'hFFFFFFFE);
+    check_vec(MEM[5], 4, 5'd31, 5'd25, 5'd0,  3'b111, 7'b1111111,
+              32'hFFFFFFF9, 32'hFFFFFFE0, 32'hFFFFF7E0, 32'hFF9FF000, 32'hFFFFFFF8);
 
     // Not a class: opcode 1111111 must light no flag at all.
     instr = 32'hFFFFFFFF; #1;
