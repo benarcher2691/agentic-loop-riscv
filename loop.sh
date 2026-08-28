@@ -13,8 +13,8 @@
 #   RUN           runner command; the prompt is appended as the last argument.
 #                 default: opencode run --agent loop --model $MODEL --auto --title <session>
 #                 e.g.     RUN="codex exec --full-auto" ./loop.sh
-#   ITER_TIMEOUT  seconds before an iteration is killed              (900)
-#   STUCK_LIMIT   stop after N consecutive iterations with no progress on the same task (2)
+#   ITER_TIMEOUT  seconds before an iteration is killed              (1800)
+#   STUCK_LIMIT   stop after N consecutive iterations with no progress on the same task (3)
 #   MIN_SECONDS   an iteration shorter than this that made no progress is a DUD — the model
 #                 returned without acting (empty/text-only turn). Duds are retried and do not
 #                 count toward STUCK_LIMIT; DUD_LIMIT consecutive duds stop the loop.  (30 / 3)
@@ -29,8 +29,8 @@ cd "$(dirname "$0")"
 
 MAX=${1:-10}
 MODEL=${MODEL:-openrouter/z-ai/glm-5.3-flash}
-ITER_TIMEOUT=${ITER_TIMEOUT:-900}
-STUCK_LIMIT=${STUCK_LIMIT:-2}
+ITER_TIMEOUT=${ITER_TIMEOUT:-1800}
+STUCK_LIMIT=${STUCK_LIMIT:-3}
 MIN_SECONDS=${MIN_SECONDS:-30}
 DUD_LIMIT=${DUD_LIMIT:-3}
 ON_RED=${ON_RED:-keep}
@@ -116,7 +116,7 @@ fi
 [[ -f "$TASKS" && -f "$PROMPT" ]] || { echo "missing $TASKS or $PROMPT" >&2; exit 1; }
 [[ "$ON_RED" == keep || "$ON_RED" == revert ]] || { echo "ON_RED must be keep or revert" >&2; exit 1; }
 
-prev_tests=$(check) || { log "baseline verifier ($CHECK_CMD) is red — fix it before looping"; exit 1; }
+prev_tests=$(check) || log "WARNING: baseline verifier ($CHECK_CMD) is red — the first iteration must fix it (AGENTS.md step 1)"
 log "loop start: run=$RUN_ID runner=${RUN:-opencode/$MODEL} max=$MAX timeout=${ITER_TIMEOUT}s stuck_limit=$STUCK_LIMIT on_red=$ON_RED tests=$prev_tests tasks_left=$(remaining)"
 printf 'iter\ttask\tstatus\tseconds\ttests\tturns\tinput\toutput\treasoning\tcache_read\tcost\n' > "$SUMMARY"
 
