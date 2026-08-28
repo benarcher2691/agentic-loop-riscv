@@ -24,5 +24,12 @@ the next session needs to know, not what it can read from the code.
   (16 reset + 1) because PC is held at 0 through POR while the strobe is tied high — the
   soc_tb pass loop starts sampling after edge 17. Benches keep independent copies of the
   16 ROM constants, cross-checked against `dut.memory.MEM[i]` (note the instance path).
-  Next: decoder task is pure combinational — hand-encode ~15 instructions, check every
-  output incl. all five immediates; cross-check against the lib's RType/IType encodings.
+- **Decoder, part 1** (task 3): `rtl/decoder.v` already existed complete from the interrupted
+  session (all 10 class flags, fields, AND all five immediates already implemented) — verified
+  it, did not rewrite it. New `tb/decoder_tb.v`: table-driven `check_vec` task, 10 hand-encoded
+  vectors (one per class) × 15 checks + 1 illegal-opcode check = 151 checks, 405 total.
+  Surprise: in I/S/B/U/J formats rs2/rd/funct7 overlap immediate bits, so expected values are
+  raw instruction bits (addi x1,x0,5 → rs2Id=5; ebreak → rs2Id=1; jal x1,16 → rs2Id=16;
+  lui → rs1=rs2=31, funct7=127). Next (part 2): immediates are already driven — bench-only
+  work; extend `check_vec` with the five expected immediates per vector and add the task's
+  positive/negative I/S/U vectors.
