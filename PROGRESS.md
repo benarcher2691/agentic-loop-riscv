@@ -88,3 +88,19 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    4-state CHECK_EQ caught it. Advice for part 2: keep register reads sync, keep the x1
    mirror's write condition general (`wrEn && rdId == 1`), and expect LCs to grow as the
    SOC program starts writing more registers (each written reg ≈ +5 observable FFs).
+- **Processor, part 2** (task 8): ALU wired into EXECUTE — `aluIn2 = isALUreg ? rs2Val : Iimm`,
+   `aluF75 = isALUreg ? funct7[5] : (isALUimm && funct3==101) ? funct7[5] : 0` (ADDI with
+   imm[30]=1 must stay ADDI; regression: `ADDI x14,x0,1024`), `wrEn = isALUreg|isALUimm`,
+   `wrData = aluOut`. Bench: 27-word program covering every ALU-reg/ALU-imm op once with
+   hand-computed results (SRAI of -7, SLTIU -1, SUB negative, SLLI 31, SRL by 33 → amount
+   [4:0]), part-1's per-cycle FSM walk kept for the first 9 instructions then free-run to
+   the EBREAK halt; 131 checks, 4271 total. LCs 139 → 771 (60%), BRAMs 2 → 5 (regfile now
+   3 RAM4K: 2 sync read ports + write), Fmax 56.76 MHz.
+   Surprises: (1) my python encoder passed `hi=1 << 25` for SRAI instead of funct7 0x20 —
+   the lib's 0x4042D893 was right; "trust the script" cuts both ways, check the script
+   against the spec formula too; (2) 5<<31 = 0x80000000, not 0xA0000000 (that's 5<<29) —
+   DUT right, my mental math wrong, the check caught it; (3) the ALU's three separate
+   barrel shifters (SLL/SRL/SRA arms) are likely the bulk of the 771 LCs — if later tasks
+   squeeze the part, share one shift core before touching anything else. Advice for JAL/
+   JALR: the wrEn/wrData path is ready for `rd <= PC+4`; add a PC-source mux in EXECUTE
+   and remember rs1Val is already latched for JALR's target.

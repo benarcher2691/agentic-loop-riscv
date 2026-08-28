@@ -1,5 +1,6 @@
 `default_nettype none
-// RV32I processor, part 1: fetch machine, register bank, ADDI, EBREAK halt.
+// RV32I processor, part 2: fetch machine, register bank, all ALU-reg and
+// ALU-imm instructions, EBREAK halt.
 //
 // Three-state machine, one instruction every three clk cycles:
 //   FETCH_INSTR  mem_rstrb high with mem_addr = PC; the memory returns the
@@ -7,9 +8,10 @@
 //   FETCH_REGS   mem_rdata now holds the instruction: the Decoder input muxes
 //                it in, the register read ports sample rs1/rs2, and instr,
 //                rs1Val, rs2Val are latched on the edge leaving this state.
-//   EXECUTE      write back and PC <= PC + 4. Only ADDI writes rd so far;
-//                every other class is a NOP that still advances PC. isSYSTEM
-//                (EBREAK) halts: state and PC stay put.
+//   EXECUTE      the ALU (combinational on the latched operands) writes back
+//                and PC <= PC + 4. Jumps/branches/loads/stores/LUI/AUIPC are
+//                still NOPs that advance PC. isSYSTEM (EBREAK) halts: state
+//                and PC stay put.
 //
 // x0 always reads 0 (read mux; writes to rd 0 are dropped). The x1 output
 // mirrors RegisterBank[1] through a register written on the same edge with
@@ -60,9 +62,31 @@ module Processor (
         .Uimm     (Uimm),      .Jimm     (Jimm)
     );
 
-    // Part 1 write path: ADDI only (rs1 + Iimm).
-    wire        wrEn   = isALUimm && (funct3 == 3'b000);
-    wire [31:0] wrData = rs1Val + Iimm;
+    // Part 2 write path: every ALU-reg and ALU-imm instruction. The second
+    // operand is rs2 for isALUreg and Iimm for isALUimm. funct7[5] selects
+    // SUB only for register ADD and SRA for both shift forms; for the other
+    // immediate ops (notably ADDI) instr[30] is an immediate bit and must
+    // not reach the ALU.
+    wire        useAlu = isALUreg | isALUimm;
+    wire [31:0] aluIn2 = isALUreg ? rs2Val : Iimm;
+    wire        aluF75 = isALUreg ? funct7[5] :
+                         (isALUimm && funct3 == 3'b101) ? funct7[5] : 1'b0;
+
+    wire [31:0] aluOut;
+    wire        aluEQ, aluLT, aluLTU;   // EQ/LT/LTU: used by branches later
+    ALU alu (
+        .in1      (rs1Val),
+        .in2      (aluIn2),
+        .funct3   (funct3),
+        .funct7_5 (aluF75),
+        .out      (aluOut),
+        .EQ       (aluEQ),
+        .LT       (aluLT),
+        .LTU      (aluLTU)
+    );
+
+    wire        wrEn   = useAlu;
+    wire [31:0] wrData = aluOut;
 
     assign mem_addr  = PC;
     assign mem_rstrb = (state == FETCH_INSTR);
