@@ -62,9 +62,29 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
   0x80000000), 5×5 edge-value sweep × all 10 op variants, explicit shift amounts
   0/1/2/4/16/31 × SLL/SRL/SRA × 5 edge values, 256 seeded `$random` vectors — 2438 checks,
   3199 total, pnr unchanged (91 LCs).
-  Surprise: iverilog evaluates `$signed(a) >>> sh` *inside an unsigned ternary* as a logical
-  shift (the ?: context wins over the operand's signedness) — both initial FAILs were my
-  reference doing SRL where the DUT was correct. Fix: compute the reference SRA in a
-  standalone assignment. Advice: the Processor should drive ALU.funct7_5 from
-  `instr[30]`/funct7 bit 5 and take branch operands straight from EQ/LT/LTU; expect the LC
-  count to jump next session since yosys currently discards the unused ALU.
+   Surprise: iverilog evaluates `$signed(a) >>> sh` *inside an unsigned ternary* as a logical
+   shift (the ?: context wins over the operand's signedness) — both initial FAILs were my
+   reference doing SRL where the DUT was correct. Fix: compute the reference SRA in a
+   standalone assignment. Advice: the Processor should drive ALU.funct7_5 from
+   `instr[30]`/funct7 bit 5 and take branch operands straight from EQ/LT/LTU; expect the LC
+   count to jump next session since yosys currently discards the unused ALU.
+- **Processor, part 1** (task 7): `rtl/processor.v` — 3-state FSM, 3 cycles/instr; Decoder
+   input muxes `mem_rdata` in during FETCH_REGS (that is how "read rs1/rs2 in FETCH_REGS"
+   works with a sync memory); register reads are synchronous (latched into rs1Val/rs2Val) so
+   RegisterBank maps to BRAM (synth log: "mapping memory SOC.processor.RegisterBank via
+   $__ICE40_RAM4K_"). The `x1` output is a same-edge mirror register, NOT
+   `assign x1 = RegisterBank[1]` — an async read would drag the regfile back to ~1000 LCs of
+   FFs+muxes. SOC = Processor+Memory at SLOW=0, LEDS = x1[4:0]; Memory's ROM is now a 6-word
+   ADDI program via the assembler tasks (yosys resolves `../lib/riscv_assembly.v` from rtl/).
+   Benches: new processor_tb (117: per-cycle strobe/PC walk, halt freeze, reg checks,
+   hand-encoding cross-check), memory_tb rewritten (ROM copy + bench-filled words 6..255,
+   full 256-word addressing, 1038 checks), soc_tb rewritten (62). 4257 total, 139 LCs,
+   2 BRAMs, Fmax 118 MHz.
+   Surprises: (1) lib LUI/AUIPC take the FINAL rd value — UType stores imm[31:12]; the lib
+   header's "pre-shifted constant" note is stale; (2) my addi x3,x2,-3 hand word was ...193,
+   not ...793 (3<<7 = 0x180) — the assembler cross-check caught both of my hand-encoding
+   slips, DUT was right both times; (3) bench signals must not be named x0..x31 (lib
+   localparam clash); (4) forgot x1's init value → LEDS was X during reset, soc_tb's
+   4-state CHECK_EQ caught it. Advice for part 2: keep register reads sync, keep the x1
+   mirror's write condition general (`wrEn && rdId == 1`), and expect LCs to grow as the
+   SOC program starts writing more registers (each written reg ≈ +5 observable FFs).

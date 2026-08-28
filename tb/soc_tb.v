@@ -1,13 +1,10 @@
 `timescale 1ns/1ps
 `default_nettype none
-// SOC smoke test: the fetch machine walks the ROM program word by word and
-// LEDS show mem_rdata[4:0]. The ROM constants are duplicated here as an
-// independent copy; the cross-check against dut.MEM catches drift.
-//
-// Timing (SLOW = 0, one LED word per CLK edge): PC is held at 0 through the
-// 16-cycle power-on reset, so LEDS show ROM word 0 during reset and for one
-// more edge; from the first post-reset edge the display is exactly periodic,
-// word w for one clock, wrapping 15 -> 0.
+// SOC smoke test: Processor + Memory run the small ADDI program from the ROM;
+// LEDS show x1[4:0]. The program walks x1 through 1,3,7,15,31 — one ADDI
+// every 3 CPU cycles — and halts on EBREAK with PC frozen at 20. The ROM
+// words are duplicated here hand-assembled; the cross-check against
+// dut.memory.MEM catches the assembler output and the copy drifting apart.
 module soc_tb;
   `include "check.vh"
   `WATCHDOG(1_000_000)
@@ -21,59 +18,58 @@ module soc_tb;
 
   always #41.667 CLK = ~CLK;   // 12 MHz
 
-  // Independent copy of the ROM program (must match rtl/memory.v).
-  reg [31:0] EXP [0:15];
+  // Hand-assembled copy of the ROM program (must match rtl/memory.v).
+  reg [31:0] EXP [0:5];
   initial begin
-    EXP[0]  = 32'h00000001;
-    EXP[1]  = 32'h00000002;
-    EXP[2]  = 32'h00000004;
-    EXP[3]  = 32'h00000008;
-    EXP[4]  = 32'h00000010;
-    EXP[5]  = 32'h00000015;
-    EXP[6]  = 32'h0000000A;
-    EXP[7]  = 32'hDEADBEEF;
-    EXP[8]  = 32'h0000001F;
-    EXP[9]  = 32'h00000000;
-    EXP[10] = 32'h80000015;
-    EXP[11] = 32'h7FFFFFFF;
-    EXP[12] = 32'h0000000C;
-    EXP[13] = 32'h00000003;
-    EXP[14] = 32'h00000018;
-    EXP[15] = 32'hCAFEBABE;
+    EXP[0] = 32'h00100093;  // addi x1,x0,1
+    EXP[1] = 32'h00208093;  // addi x1,x1,2
+    EXP[2] = 32'h00408093;  // addi x1,x1,4
+    EXP[3] = 32'h00808093;  // addi x1,x1,8
+    EXP[4] = 32'h01008093;  // addi x1,x1,16
+    EXP[5] = 32'h00100073;  // ebreak
   end
 
-  integer i, pass, w;
+  // LEDS after each of the first 15 post-reset edges: x1 changes on the edge
+  // that completes each ADDI (FETCH_INSTR, FETCH_REGS, EXECUTE = 3 edges).
+  reg [4:0] EXP_LEDS [0:14];
+  integer i;
 
   initial begin
+    EXP_LEDS[0]  = 5'd0;  EXP_LEDS[1]  = 5'd0;
+    EXP_LEDS[2]  = 5'd1;  EXP_LEDS[3]  = 5'd1;  EXP_LEDS[4]  = 5'd1;
+    EXP_LEDS[5]  = 5'd3;  EXP_LEDS[6]  = 5'd3;  EXP_LEDS[7]  = 5'd3;
+    EXP_LEDS[8]  = 5'd7;  EXP_LEDS[9]  = 5'd7;  EXP_LEDS[10] = 5'd7;
+    EXP_LEDS[11] = 5'd15; EXP_LEDS[12] = 5'd15; EXP_LEDS[13] = 5'd15;
+    EXP_LEDS[14] = 5'd31;
+
     `CHECK_EQ(TXD, 1'b1, "TXD idles high")
 
-    // Power-on reset: PC held at 0, strobe high, so LEDS already show word 0.
+    // Power-on reset: PC held at 0, x1 = 0, LEDS dark.
     for (i = 0; i < 16; i = i + 1) begin
       @(posedge CLK); #1;
-      `CHECK_EQ(LEDS, EXP[0][4:0], "LEDS show ROM word 0 during reset")
+      `CHECK_EQ(LEDS, 5'd0, "LEDS dark during reset")
     end
     `CHECK_EQ(dut.clockworks.resetn, 1'b1, "reset released after 16 cycles")
-    `CHECK_EQ(dut.PC, 32'd0, "PC starts at 0")
+    `CHECK_EQ(dut.processor.PC, 32'd0, "PC starts at 0")
 
-    // Two full passes over the ROM, word by word (edge, then sample).
-    for (pass = 0; pass < 2; pass = pass + 1)
-      for (w = 0; w < 16; w = w + 1) begin
-        @(posedge CLK); #1;
-        `CHECK_EQ(LEDS, EXP[w][4:0], "LEDS follow the ROM word by word")
-        if (pass == 0 && w == 0)
-          `CHECK_EQ(dut.PC, 32'd4, "PC advances by 4 out of reset")
-        if (pass == 1 && w == 0)
-          `CHECK_EQ(dut.PC, 32'd4, "PC wrapped to 0, then advanced by 4")
-      end
+    // Program run: one ADDI every 3 edges, LEDS = x1[4:0].
+    for (i = 0; i < 15; i = i + 1) begin
+      @(posedge CLK); #1;
+      `CHECK_EQ(LEDS, EXP_LEDS[i], "LEDS walk 0,1,3,7,15,31, one ADDI every 3 edges")
+    end
+    `CHECK_EQ(dut.processor.PC, 32'd20, "PC at the EBREAK after the five ADDIs")
+    `CHECK_EQ(dut.processor.RegisterBank[1], 32'd31, "x1 = 1+2+4+8+16 = 31")
 
-    // After two passes (32 words) PC has wrapped back to 0 and LEDS still
-    // show the last word of the second pass.
-    `CHECK_EQ(dut.PC, 32'd0, "PC wrapped after the last initialised word")
-    `CHECK_EQ(LEDS, EXP[15][4:0], "LEDS show the last word after two passes")
+    // EBREAK halts: LEDS and PC frozen.
+    repeat (10) begin
+      @(posedge CLK); #1;
+      `CHECK_EQ(LEDS, 5'd31, "LEDS frozen after EBREAK")
+      `CHECK_EQ(dut.processor.PC, 32'd20, "PC frozen after EBREAK")
+    end
 
-    // The bench copy and the ROM must agree.
-    for (i = 0; i < 16; i = i + 1)
-      `CHECK_EQ(dut.memory.MEM[i], EXP[i], "ROM word matches the bench's independent copy")
+    // The ROM words match the hand-assembled copies.
+    for (i = 0; i < 6; i = i + 1)
+      `CHECK_EQ(dut.memory.MEM[i], EXP[i], "ROM word matches the hand encoding")
 
     `DONE
   end

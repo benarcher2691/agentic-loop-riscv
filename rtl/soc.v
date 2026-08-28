@@ -1,8 +1,9 @@
 `default_nettype none
 // Top level for the iCEstick. Port names must match boards/icestick.pcf.
-// The loop agent builds this up task by task (see TASKS.md).
+// Processor + Memory run at full CLK speed (SLOW = 0 passes CLK through);
+// LEDS show x1[4:0] of the program in the ROM.
 module SOC #(
-    parameter SLOW = 19   // LED step rate: clk = CLK / 2^SLOW (~43 ms at 12 MHz)
+    parameter SLOW = 0    // 0 = CPU at full CLK speed; >0 divides CLK by 2^SLOW
 ) (
     input  wire       CLK,   // 12 MHz board clock
     input  wire       RXD,   // UART receive (host -> FPGA), unused for now
@@ -12,28 +13,27 @@ module SOC #(
     wire clk, resetn;
     Clockworks #(.SLOW(SLOW)) clockworks (.CLK(CLK), .clk(clk), .resetn(resetn));
 
-    // Fetch machine: PC walks the ROM program word by word and LEDS show the
-    // low 5 bits of the word at PC. PROG_WORDS must match the number of words
-    // the program in rtl/memory.v initialises.
-    localparam integer PROG_WORDS = 16;
+    wire [31:0] mem_addr, mem_rdata;
+    wire        mem_rstrb;
+    wire [31:0] x1;
 
-    reg [31:0] PC = 32'd0;    // byte address of the word being fetched
-
-    wire [31:0] mem_rdata;
-    Memory memory (
-        .clk       (clk),
-        .mem_addr  (PC),
-        .mem_rdata (mem_rdata),
-        .mem_rstrb (1'b1)     // always reading; the strobe matters for RAM later
+    Processor processor (
+        .clk      (clk),
+        .resetn   (resetn),
+        .mem_addr (mem_addr),
+        .mem_rdata(mem_rdata),
+        .mem_rstrb(mem_rstrb),
+        .x1       (x1)
     );
 
-    always @(posedge clk) begin
-        if (!resetn)                     PC <= 32'd0;
-        else if (PC >= (PROG_WORDS-1)*4) PC <= 32'd0;  // wrap after the last word
-        else                             PC <= PC + 32'd4;
-    end
+    Memory memory (
+        .clk      (clk),
+        .mem_addr (mem_addr),
+        .mem_rdata(mem_rdata),
+        .mem_rstrb(mem_rstrb)
+    );
 
-    assign LEDS = mem_rdata[4:0];
+    assign LEDS = x1[4:0];
 
     assign TXD = 1'b1;      // UART line idles high
 endmodule
