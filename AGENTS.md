@@ -29,7 +29,7 @@ meaningful change. If it is red when you start, fixing it is your first task.
 | `rtl/emitter_uart.v` | Provided UART transmitter `corescore_emitter_uart` (do not edit). |
 | `tb/*_tb.v` | Testbenches. Module name = file stem (`tb/alu_tb.v` ↔ `module alu_tb`). Compiled with `-g2012 -DBENCH`. |
 | `tb/check.vh` | `CHECK`, `CHECK_EQ`, `DONE`, `WATCHDOG` macros. Include it inside the bench module. |
-| `lib/riscv_assembly.v` | Provided Verilog-macro RISC-V assembler (do not edit). `include` it **inside** a module that declares `reg [31:0] MEM [0:N]`; read its header comment the first time you use it. |
+| `lib/riscv_assembly.v` | Provided Verilog-macro RISC-V assembler (do not edit). `include` it **inside** a module that declares `reg [31:0] MEM [0:N]`. Do not read the whole file (800 lines): `head -60 lib/riscv_assembly.v` shows the usage; macros are the instruction names with RISC-V operand order (`ADD(rd,rs1,rs2)`, `ADDI(rd,rs1,imm)`, `LW(rd,rs1,imm)`, `SW(rs2,rs1,imm)`, `BEQ(rs1,rs2,imm)`, `JAL(rd,imm)`, `LUI(rd,imm)`, `EBREAK()`), registers are `x0`..`x31`, `Label(L)`/`LabelRef(L)` need `integer L;`, finish with `endASM();`. |
 | `build/` | Generated. Logs: `build/<bench>.log`, `build/lint.log`, `build/synth.log`, `build/pnr.log`. |
 
 ## Verilog rules (synthesizable code in `rtl/`)
