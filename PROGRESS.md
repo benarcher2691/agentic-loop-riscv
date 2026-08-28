@@ -53,6 +53,18 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
   Surprises: (1) the "jal x1,2046" word I first built was really jal x1,4094 — 0x7FF000EF has
   imm[11]=1; kept it as the swap-edge test; (2) two FAILs from transcribing funct3=000 for
   0xFF9FF06F where bits[14:12]=111 — the python slicer had it right, I overrode it by eye.
-  Advice: trust the slicer output verbatim, never re-derive fields by hand. The lib include
-  resolves via the Makefile's `-I lib`; it needs `MEM` + brings its own `memPC` (assign it
-  before generating). Next task is the ALU (rtl/alu.v) — first new RTL module since Memory.
+   Advice: trust the slicer output verbatim, never re-derive fields by hand. The lib include
+   resolves via the Makefile's `-I lib`; it needs `MEM` + brings its own `memPC` (assign it
+   before generating). Next task is the ALU (rtl/alu.v) — first new RTL module since Memory.
+- **ALU** (task 6): `rtl/alu.v` (full funct3/funct7_5 decode, shift amount in2[4:0], SLT/SLTU
+  reuse the EQ/LT/LTU output wires so the two paths cannot disagree) + `tb/alu_tb.v`:
+  hand-anchored literal checks (overflow wrap, SRA sign fill, signed-vs-unsigned on
+  0x80000000), 5×5 edge-value sweep × all 10 op variants, explicit shift amounts
+  0/1/2/4/16/31 × SLL/SRL/SRA × 5 edge values, 256 seeded `$random` vectors — 2438 checks,
+  3199 total, pnr unchanged (91 LCs).
+  Surprise: iverilog evaluates `$signed(a) >>> sh` *inside an unsigned ternary* as a logical
+  shift (the ?: context wins over the operand's signedness) — both initial FAILs were my
+  reference doing SRL where the DUT was correct. Fix: compute the reference SRA in a
+  standalone assignment. Advice: the Processor should drive ALU.funct7_5 from
+  `instr[30]`/funct7 bit 5 and take branch operands straight from EQ/LT/LTU; expect the LC
+  count to jump next session since yosys currently discards the unused ALU.
