@@ -40,6 +40,8 @@ $(BUILD)/%.simok: tb/%_tb.v $(RTL) tb/check.vh lib/riscv_assembly.v | $(BUILD)
 lint: | $(BUILD)
 	@echo "=== lint"
 	yosys -q -l $(BUILD)/lint.log -p "read_verilog -sv $(RTL); hierarchy -check -top $(TOP); proc; check -assert" >/dev/null
+	@grep -qE 'wire rxs *= *sync\[1\];' rtl/uart_rx.v || { echo "FAIL: RXD synchroniser must stay 2 flops deep (rxs from sync[1]) — metastability guard, unverifiable by simulation (audit M1)"; exit 1; }
+	@bad=$$(grep -l FAST_SIM rtl/*.v | grep -v clockworks.v); test -z "$$bad" || { echo "FAIL: FAST_SIM outside rtl/clockworks.v gets zero gate-level (equiv) coverage — the field-bug fault line (audit): $$bad"; exit 1; }
 
 # --- synthesis for iCE40; a latch is always a bug here
 synth: $(BUILD)/$(TOP).json
