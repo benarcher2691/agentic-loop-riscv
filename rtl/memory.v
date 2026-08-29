@@ -14,67 +14,76 @@ module Memory (
 );
     reg [31:0] MEM [0:1535];
 
-    // ROM program: the hardware demo. Prints "Loop RISC-V\n" over the UART
-    // (byte loads from the message at word 32, busy-wait on the status word
-    // between bytes), then walks a 1 across LEDS exactly once (1,2,4,8,16 —
-    // the walk's shift-and-mask wraps the pattern to 0, which ends the loop),
-    // then echoes UART input forever: poll the RX word (0x400020), when the
-    // avail bit (8) is set write the byte back to the UART data register
-    // (busy-wait on status bit 9) and show byte & 31 on the LEDs. Each walk
-    // step waits on the RDCYCLE counter: read cycle (CSR 0xC00) once, then
-    // loop until the 32-bit-wrap-safe difference now-start reaches DELAY
-    // (3 000 000 on hardware = 0.25 s at 12 MHz; a small value under `ifdef
-    // FAST_SIM so simulations stay fast). tb/soc_tb.v and tb/memory_tb.v
-    // keep independent copies of these words.
+    // ROM program: the hardware demo / monitor front end. Sets up the IO
+    // base (x5 = 0x400000) and the stack pointer (x2 = 0x1800, one past the
+    // top of the 6 KB RAM, growing down; the monitor's code will live low),
+    // prints "Loop RISC-V\n" over the UART one byte per message word via
+    // PUTBYTE, then calls ECHO2 forever. ECHO2 is a non-leaf subroutine: it
+    // pushes ra (x1) at sp-4, reads one byte with GETBYTE (blocking poll of
+    // the RX word 0x400020 until avail bit 8; the read clears avail), calls
+    // PUTBYTE twice — once with the byte, once with byte+1 — restores ra and
+    // sp, and returns. PUTBYTE polls the TX status 0x400010 until busy
+    // (bit 9) is low, then writes the byte to the UART data register
+    // 0x400008 (the SOC takes bits [7:0]). GETBYTE and PUTBYTE are leaves:
+    // no calls, so they skip the push/pop. The program deliberately sticks
+    // to LW/SW/ADDI/ANDI/BNE/JAL/JALR/LUI (no LB/BEQ): with the constant ROM
+    // the flattened netlist then prunes the byte-lane load logic and the
+    // branch-condition mux, which is what keeps the part under the LC
+    // budget. tb/soc_tb.v, tb/memory_tb.v and tb/monitor_io_tb.v keep
+    // copies / cross-checks of these words.
     `include "../lib/riscv_assembly.v"
-    integer WBYTE = 12, WBUSY = 20, LSTEP = 48, WDELAY = 64, ECHO = 88, EBUSY = 104;
+    integer WBYTE = 20, MAIN = 40, ECHO2 = 48, GETBYTE = 84, GBDONE = 100, PUTBYTE = 108;
     initial begin
         LUI(x5, 32'h00400000);   // x5 = 0x400000 IO base
+        LUI(x2, 32'h2000);       // x2 = 0x2000 (lib LUI takes the FINAL value)
+        ADDI(x2, x2, -2048);     // sp = 0x1800: one past the top of RAM
         ADDI(x6, x0, 128);       // x6 = &message (byte 128 = word 32)
         ADDI(x7, x0, 12);        // 12 banner bytes
         Label(WBYTE);
-        LB(x10, x6, 0);          // x10 = *p
-        SW(x10, x5, 8);          // UART data <- char
-        Label(WBUSY);
-        LW(x8, x5, 16);          // UART status
-        ANDI(x8, x8, 512);       // busy = bit 9
-        BNE(x8, x0, LabelRef(WBUSY));
-        ADDI(x6, x6, 1);         // p++
+        LW(x10, x6, 0);          // x10 = message word (char in bits [7:0])
+        JAL(x1, LabelRef(PUTBYTE)); // blocking write of a0's low byte
+        ADDI(x6, x6, 4);         // p++ (one word per char)
         ADDI(x7, x7, -1);        // count--
         BNE(x7, x0, LabelRef(WBYTE));
-        ADDI(x9, x0, 1);         // LED pattern = 1
-        Label(LSTEP);
-        SW(x9, x5, 4);           // LEDS <- pattern
-        CSRRS(x14, 12'hC00, x0); // x14 = cycle: start of this step's delay
-`ifdef FAST_SIM
-        ADDI(x16, x0, 300);      // DELAY = 300 cycles per step in simulation
-        ADDI(x16, x16, 0);
-`else
-        LUI(x16, 32'h002DC);     // 3000000 = 0x2DC6C0 ...
-        ADDI(x16, x16, 32'h6C0); // ... cycles = 0.25 s per step at 12 MHz
-`endif
-        Label(WDELAY);
-        CSRRS(x15, 12'hC00, x0); // x15 = cycle now
-        SUB(x15, x15, x14);      // x15 = now - start: the difference is
-        BLTU(x15, x16, LabelRef(WDELAY)); // wrap-safe; loop while it < DELAY
-        ADD(x9, x9, x9);         // pattern <<= 1
-        ANDI(x9, x9, 31);        // keep 5 bits
-        BNE(x9, x0, LabelRef(LSTEP));  // 5 steps (1,2,4,8,16); 32&31 = 0 ends it
-        Label(ECHO);
-        LW(x8, x5, 32);          // RX word {23'd0, avail, data}; read clears avail
-        ANDI(x11, x8, 256);      // avail = bit 8
-        BEQ(x11, x0, LabelRef(ECHO));
-        SW(x8, x5, 8);           // UART data <- byte (low 8 bits)
-        Label(EBUSY);
-        LW(x12, x5, 16);         // UART status
-        ANDI(x12, x12, 512);     // busy = bit 9
-        BNE(x12, x0, LabelRef(EBUSY));
-        ANDI(x13, x8, 31);       // LEDs <- byte & 31
-        SW(x13, x5, 4);
-        JAL(x0, LabelRef(ECHO));
-        DATAB(8'h4C, 8'h6F, 8'h6F, 8'h70);   // "Loop"
-        DATAB(8'h20, 8'h52, 8'h49, 8'h53);   // " RIS"
-        DATAB(8'h43, 8'h2D, 8'h56, 8'h0A);   // "C-V\n"
+        Label(MAIN);
+        JAL(x1, LabelRef(ECHO2)); // ra = 44 (the J below); call ECHO2
+        JAL(x0, LabelRef(MAIN));  // forever
+        Label(ECHO2);
+        ADDI(x2, x2, -4);        // push: sp -= 4
+        SW(x1, x2, 0);           // save ra
+        JAL(x1, LabelRef(GETBYTE));  // a0 = one byte (blocking)
+        JAL(x1, LabelRef(PUTBYTE));  // echo it
+        ADDI(x10, x10, 1);       // a0 = byte + 1
+        JAL(x1, LabelRef(PUTBYTE));  // echo it again (nested call #2)
+        LW(x1, x2, 0);           // restore ra
+        ADDI(x2, x2, 4);         // pop: sp += 4
+        JALR(x0, x1, 0);         // RET
+        Label(GETBYTE);          // leaf: a0 = blocking RX byte
+        LW(x10, x5, 32);         // RX word {23'd0, avail, data}; read clears avail
+        ANDI(x11, x10, 256);     // avail = bit 8
+        BNE(x11, x0, LabelRef(GBDONE));
+        JAL(x0, LabelRef(GETBYTE));
+        Label(GBDONE);
+        ANDI(x10, x10, 255);     // a0 = byte (bits [7:0])
+        JALR(x0, x1, 0);         // RET
+        Label(PUTBYTE);          // leaf: blocking TX of a0's low byte
+        LW(x11, x5, 16);         // UART status
+        ANDI(x11, x11, 512);     // busy = bit 9
+        BNE(x11, x0, LabelRef(PUTBYTE));
+        SW(x10, x5, 8);          // UART data <- a0 (SOC takes bits [7:0])
+        JALR(x0, x1, 0);         // RET
+        DATAB(8'h4C, 8'h00, 8'h00, 8'h00);   // 'L'
+        DATAB(8'h6F, 8'h00, 8'h00, 8'h00);   // 'o'
+        DATAB(8'h6F, 8'h00, 8'h00, 8'h00);   // 'o'
+        DATAB(8'h70, 8'h00, 8'h00, 8'h00);   // 'p'
+        DATAB(8'h20, 8'h00, 8'h00, 8'h00);   // ' '
+        DATAB(8'h52, 8'h00, 8'h00, 8'h00);   // 'R'
+        DATAB(8'h49, 8'h00, 8'h00, 8'h00);   // 'I'
+        DATAB(8'h53, 8'h00, 8'h00, 8'h00);   // 'S'
+        DATAB(8'h43, 8'h00, 8'h00, 8'h00);   // 'C'
+        DATAB(8'h2D, 8'h00, 8'h00, 8'h00);   // '-'
+        DATAB(8'h56, 8'h00, 8'h00, 8'h00);   // 'V'
+        DATAB(8'h0A, 8'h00, 8'h00, 8'h00);   // '\n'
         endASM();
     end
 

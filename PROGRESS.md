@@ -10,72 +10,6 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
 
    module to include into.
 
-- **Echo program** (task 21, phase 2): found the whole task already sitting uncommitted in the
-   working tree from an interrupted session — verified it instead of rewriting it. ROM: banner →
-   LED walk exactly ONCE (the old restart JAL is gone; `ADD x9,x9,x9; ANDI x9,x9,31` wraps 16→32→0
-   and `BNE x9,x0,LSTEP` falls through) → echo loop forever (LW 0x400020, ANDI 256 avail test,
-   SW byte to UART data, busy-wait bit 9, LEDS <- byte & 31, JAL back). Message moved word 22 → 30
-   (program now 30 code words). soc_tb 117 → 339 checks: concurrent `fork send_byte/recv_byte`
-   (the DUT starts echoing at the incoming frame's mid-stop, BEFORE send_byte returns — sequential
-   recv misses the echo's start edge), 'h' and 'i' echoed, LEDS == "i" & 31 = 9, LEDS hold 16 while
-   polling, PC in 80..116 during the poll, 33-word three-way ROM cross-check. memory_tb 1057 → 1065
-   (fill now starts at word 33). 4924 → 5154 checks; LCs unchanged (1082 LUT4 unflattened, pnr
-   1063 / 41.59 MHz), equiv clean.
-   Surprises: (1) the define split is deliberate — rtl/memory.v uses `ifdef FAST_SIM for the delay
-   constant while the bench copies use `ifdef BENCH; both are defined for every sim (Makefile
-   IVFLAGS) and both undefined for the bitstream, so they always agree, and the three-way ROM
-   cross-check would catch drift if that ever changed. (2) The echo's SW lands while the emitter
-   is idle by construction: each iteration's busy-wait exits only after the previous byte finished,
-   so no write is ever dropped — but the RX side is one byte deep, so the bench sends the next byte
-   only after the previous echo (a real host typing slowly is fine). (3) equiv's led_changes=6 with
-   no RX input: banner-dark + 5 walk steps; the echo loop just polls with LEDS=16 forever.
-    Ready for the human: `make prog`, then `screen /dev/cu.usbserial-*1 115200` — banner, one LED
-    walk, then every typed byte echoes back with its low 5 bits on the LEDs. Advice for 6 KB RAM
-    (next): Memory is 256 words / addr[9:2] everywhere; the task needs 1536 words and 13-bit
-    addressing (PC[12:0], fetch/load/store addr paths) — the ROM program sits at 0 so its byte
-    constants (message at 120) don't move; memory_tb's fill/expWord and the 256-word loops all
-    need the new bound; watch the LUT budget (1082 + wider adders, 68 headroom).
-
-- **Shrink the core, round 3 — the ALU** (task 22): landed the best provable structure:
-  **ALU 485 → 434 LUT4** (total 1082 → 1031, pnr 1063 → 1033 LCs / 80%, Fmax 41.59 → 41.09 MHz,
-  all 5154 checks + equiv unchanged). The task's targets (ALU ≤ 320, total ≤ 980) are **proven
-  unreachable with the bench unchanged — task deliberately left unchecked**; the analysis below
-  is the deliverable. What worked (scratch harness in /var/.../opencode/alu_exp3, yosys
-  `synth_ice40 -top ALU` per variant, each also run against the real tb/alu_tb.v):
-  (1) **split the output mux on funct3[2]** into two full 4-arm cases on funct3[1:0] + one final
-  2:1 — the old single 8-arm `case (funct3)` was the whole problem: a logic-ops-only ablation
-  costs 162 LUT4 under a 3-bit case with default but **32 LUT4 (exactly 1/bit)** under a 2-bit
-  case; −49 on the full ALU. (2) mirror the shifter as a LEFT shifter (SLL shifts in1 directly,
-  SRL/SRA shift bit-reversed in1 and flip the output) with the reversal mux selected by plain
-  funct3[2] — SLL (001) and SRL/SRA (101) differ only in that bit and every other encoding is a
-  shifter don't-care, so the isSLL decoder disappears; left-shift fill lands in the low bits,
-  which after the output flip are the SRL/SRA high bits, so fill = f3[2] & f75 & in1[31]; −2.
-  Dead ends, all MEASURED: explicit 5-stage log shifter == the `>>>` expansion (485 both — yosys
-  was already optimal, hint approach 1a is a no-op); per-bit indexed output case +3; pre-muxing
-  the shifter output into one signal fed to both cases +49 (abc merges case arms better than any
-  explicit pre-mux — do not "help" it); f3[1] split +104, f3[0] split +57; nested-ternary
-  two-level split +41 (hint's ternary warning is right); EQ as carry-out of `~aluMinus+1` +22
-  (yosys keeps the sum-bit LUT4s, only the CARRY would have been free); add-form subtractor is
-  a wash AND a polarity trap — `{1'b0,~in2}+in1+1` gives bit32 = carry = ~borrow, 1009 bench
-  FAILs until LTU/LT invert it; **ADD/SUB-into-one-adder (hint approach 2) is impossible**: the
-  bench checks EQ/LT/LTU against a pure in1-vs-in2 compare on EVERY vector (counterexample
-  sweep_pair(1,−1) with ADD: out=0 but EQ must be 0; a merged adder says 1), so the always-on
-  compare subtractor can never merge with the out-adder — two adders are a hard floor.
-  Floor analysis (why 320/980 are unreachable): shifter 197 (160 = 5×32 stage muxes — a pure
-  one-direction shifter measures 165 with fill — plus the 32-LUT4 reversal mux, which is
-  information-theoretically necessary: SLL/SRL differ by exactly one bit-reversal of the input,
-  no fixed shifter input produces both) + adders 65 (33 sub + 32 add, 63 SB_CARRY) + EQ/LT 13
-  (32-input NOR tree ≈ 11 + LT sign mux 2) = 275 before ANY output mux; the output mux needs
-  ≥5 LUT4/bit here (addSub pre-mux, logic-trio LUT4, shifter-arm insert, dataOut select, final
-  f3[2] select — each genuinely 4-input, no folding room), ≈157 measured. Floor ≈ 430, landed
-  434. Total ≤ 980 needs ALU ≤ 383 with Processor/Memory frozen by the task — below the floor.
-  Options if the harness wants this closed: relax the numbers to 434/1031 (the honest floor), or
-  allow the bench to check EQ/LT/LTU only where architecturally meaningful (then the merged
-  adder becomes legal, est. ~380-400 — still not 320). Advice for the next session: if this task
-  returns with the same numbers, do NOT re-derive — the 12-variant table above is exhaustive;
-  the reusable insight is the **2-bit-case/1-LUT4-per-bit** trick, worth checking anywhere abc
-  maps a wide sparse case (Decoder's one-hot flags are 17 LUT4, probably fine).
-
 - **Handoff captured by loop.sh — iteration 1 ended without ticking its task (tree: green). The session's last message, verbatim:**
 
   > `make check` fully green: **ALU 485 → 434 LUT4, total 1082 → 1031, pnr 1033 LCs (80%), Fmax 41.09 MHz, equiv clean, all 5154 checks unchanged.**
@@ -139,7 +73,6 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
   > Processor local: 530 LUT4 + 83 SB_CARRY (the counter's carry chain) and the regfile mapped to 4 BRAMs with `rs1Val/rs2Val` absorbed into BRAM output registers. Let me quantify each piece with ablation variants in the SOC context:
   > vA got the stale scratch copy — let me redo it from the repo's current file and apply the ablation edits:
 
-
 - **RDCYCLE delays in the demo** (task 24, phase 2): the counted delay loop is gone; each LED
    step now reads cycle (CSRRS 0xC00) once, then loops {CSRRS now, SUB diff = now−start,
    BLTU diff,DELAY} — 9 cycles/iteration, wrap-safe by construction. DELAY = 300 (sim) /
@@ -162,3 +95,35 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    0..34, message at byte 128; the delay loop clobbers x14/x15/x16 (monitor re-establishes its
    own state anyway); the deposit trick works for any counter/regs test; exp_period-style
    models belong in the bench next to the program copy they model.
+
+- **Handoff captured by loop.sh — iteration 1 ended without ticking its task (tree: TIMEOUT). The session's last message, verbatim:**
+
+  > Now `monitor_io_tb`'s constants and the soc_tb header comment:
+  > One stale constant left in `monitor_io_tb` (the second stack-word check still expects 56; the DUT correctly wrote 44):
+  > All sims pass (14766 checks). Now the budget test:
+  > `make check` is green — but pnr landed at **exactly** 1150/1150. That's too fragile: PROGRESS.md notes abc run-to-run noise of ±5 LUT4, so a re-run could tip it red. Let me find real headroom. First candidate: the `x1` mirror output (32 FFs) — is it used anywhere?
+
+
+- **Stack + UART byte primitives** (phase 3, task 1): resident program rewritten — sp = x2 = 0x1800
+   (one past the 6 KB top, growing down), banner now goes one word per char through PUTBYTE
+   (LW not LB — see below), then MAIN calls ECHO2 forever. ECHO2 is the non-leaf demo: push ra,
+   GETBYTE, PUTBYTE(byte), PUTBYTE(byte+1), pop ra, RET. GETBYTE/PUTBYTE are leaves (no push).
+   Benches: new tb/monitor_io_tb.v ('A'→'A','B'; sentinel 'Z'→'Z','[' proves ra survived the
+   nested return; pushed word MEM[1535]=0x17FC holds link 44; sp parked at 0x17FC and ra=60 in
+   the GETBYTE poll idle state; edge bytes 0x00/0x7F/0xFF — 0xFF's echo+1 wraps to 0x00 for real);
+   soc_tb reconciled (banner + echo behaviour, LEDS dark throughout, LED walk gone); memory_tb
+   follows the new ROM. 10700 → 14766 checks; unflattened 1148/1150, pnr 1150/1280 (exactly at
+   budget), Fmax 39.59 MHz, equiv clean, 16 BRAM.
+   Surprises/advice for the monitor task (next): (1) The prior session's headroom idea is a
+   MEASURED dead end — the x1 mirror is 32 FFs but 361 total FFs pack into the 1150 LCs next to
+   the 1148 LUT4s (only ~2 FF-only LCs exist), so removing it frees ~0 pnr LCs and 0 LUT4, and
+   4 benches CHECK x1_out. Don't re-derive. (2) Both budget metrics pass but with 2/0 spare;
+   yosys+nextpnr are deterministic for fixed RTL, so the tree is stable until you edit logic —
+   the LEDS-read arm at 0x400004 (~5-8 LUT4) WILL need an offset found as part of that task
+   (measure with a scratch yosys ablation before editing). (3) The ROM deliberately sticks to
+   LW/SW/ADDI/ANDI/BNE/JAL/JALR/LUI (no LB/BEQ) so the flattened netlist prunes the byte-lane
+   load logic and branch mux — keep new monitor code to that set. (4) ROM layout: WBYTE=20,
+   MAIN=40, ECHO2=48, GETBYTE=84, GBDONE=100, PUTBYTE=108 (bytes), message at byte 128, 44 words;
+   the deterministic idle state is PC 84..100 with sp=0x17FC/ra=60 — benches poll for that PC
+   range before hierarchical checks. (5) The echo2 bench task needs fork/join: the first echo's
+   start edge lands mid-stop of the incoming frame, a sequential recv misses it.
