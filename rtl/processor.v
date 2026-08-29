@@ -16,7 +16,10 @@
 //                PC + Uimm. A load instead asserts the read strobe with the
 //                effective address rs1 + Iimm (computed by the ALU's ADD —
 //                its funct3 input is forced to 000 for loads) and moves on.
-//                isSYSTEM (EBREAK) halts: state and PC stay put.
+//                A CSR read (CSRRS, rs1 = x0, address 0xC00/0xC80) writes
+//                the cycle counter (or 0 for cycleh) to rd and advances.
+//                isSYSTEM otherwise (EBREAK, any other SYSTEM encoding)
+//                halts: state and PC stay put.
 //   LOAD         wait state: the synchronous memory has latched the loaded
 //                word into mem_rdata (the strobe is low again, so it holds).
 //                The byte/halfword lane comes from the effective address's
@@ -48,6 +51,18 @@ module Processor (
     reg [1:0]  state = FETCH_INSTR;
     reg [31:0] PC    = 32'd0;
     reg [31:0] rs1Val, rs2Val;
+
+    // Free-running 32-bit cycle counter (RDCYCLE): +1 every clk, cleared by
+    // !resetn. It does not depend on the FSM — it keeps counting through
+    // fetches, load waits and the EBREAK halt (wall-clock time; part 2 of
+    // this task builds delays on it). 32 bits, not the ISA's 64: at 12 MHz
+    // it wraps every ~357 s and the only consumers compare differences, so
+    // wrap is harmless (docs/decisions.md).
+    reg [31:0] cycles = 32'd0;
+    always @(posedge clk) begin
+        if (!resetn) cycles <= 32'd0;
+        else         cycles <= cycles + 32'd1;
+    end
 
     // Load bookkeeping, latched while the decoder still sees the instruction
     // (mem_rdata is clobbered by the load data during the LOAD state).
@@ -90,6 +105,16 @@ module Processor (
     // immediate ops (notably ADDI) instr[30] is an immediate bit and must
     // not reach the ALU.
     wire        doJump  = isJAL | isJALR;
+    // CSR read: CSRRS (funct3 = 010) with rs1 = x0 and the CSR address
+    // (Iimm[11:0]) 0xC00 (cycle) or 0xC80 (cycleh). The value is written to
+    // rd and the PC advances like any other instruction; every other SYSTEM
+    // encoding — EBREAK, CSRRW/CSRRC, CSRRS with rs1 != 0 or any other
+    // address — still halts (isSYSTEM && !isCSRread in EXECUTE).
+    // CSR address pattern: 0xC00/0xC80 differ only in Iimm[7], so the other
+    // 11 bits are checked once and isC00 is a single bit more.
+    wire isCSRaddr = (Iimm[11:8] == 4'hC) & (Iimm[6:0] == 7'd0);
+    wire isCSRread = isSYSTEM & (funct3 == 3'b010) & (rs1Id == 5'd0) & isCSRaddr;
+    wire isC00     = isCSRread & ~Iimm[7];  // cycleh (0xC80) reads as 0
     // Branches compare rs1 vs rs2 through the ALU's dedicated compare
     // outputs (funct3-independent); funct3 only picks which comparison
     // decides the branch. The second ALU operand is therefore rs2 for
@@ -102,9 +127,34 @@ module Processor (
     // to aluOut). Branches compare rs2, stores add Simm, everything else
     // adds Iimm.
     wire [31:0] aluIn1 = isAUIPC ? PC : isLUI ? 32'b0 : rs1Val;
-    wire [31:0] aluIn2 = (isAUIPC | isLUI)  ? Uimm  :
-                         (isALUreg | isBranch) ? rs2Val :
-                         isStore            ? Simm  : Iimm;
+    // ALU operand 2 is a 4-way priority mux (Uimm / rs2Val / Simm / Iimm),
+    // but the immediate forms coincide above bit 4: Simm and Iimm are both
+    // {20{instr[31]}} down to bit 12 and share instr[31:25] in bits [11:5],
+    // and Uimm is zero in [11:0]. So [31:12] is a 3-way mux, [11:5] a
+    // 3-way with a constant arm, and only [4:0] needs all four data arms
+    // (pre-muxed: isStore ? Simm : Iimm). Every slice is then a <=5-input
+    // function — 1-2 LUT4 per bit instead of the 3 a full 7-input 4-way
+    // mux costs.
+    wire        in2UL = isAUIPC | isLUI;
+    wire        in2RB = isALUreg | isBranch;
+    wire [4:0]  in2Lo = isStore ? Simm[4:0] : Iimm[4:0];
+    reg [19:0]  in2Hi;
+    reg [6:0]   in2Mid;
+    reg [4:0]   in2LoS;
+    always @(*) begin
+      // 2-bit case: at most 3 data arms per slice, so each output bit is
+      // a <=5-input function (abc maps 2-bit cases at 1-2 LUT4/bit; the
+      // 3-select 4-way form cost 3).
+      case ({in2UL, in2RB})
+        2'b00:   begin in2Hi  = Iimm[31:12];  in2Mid = Iimm[11:5];
+                       in2LoS = in2Lo;                            end
+        2'b01:   begin in2Hi  = rs2Val[31:12]; in2Mid = rs2Val[11:5];
+                       in2LoS = rs2Val[4:0];                     end
+        default: begin in2Hi  = Uimm[31:12];  in2Mid = 7'b0;
+                       in2LoS = 5'b0;                            end
+      endcase
+    end
+    wire [31:0] aluIn2 = {in2Hi, in2Mid, in2LoS};
     wire        aluF75 = isALUreg ? funct7[5] :
                          (isALUimm && funct3 == 3'b101) ? funct7[5] : 1'b0;
 
@@ -148,7 +198,7 @@ module Processor (
     wire [31:0] jumpTarget   = isJAL ? {19'b0, pcPlusImm13}
                                      : (aluOut & ~32'h00000001);
 
-    wire        wrEn   = useAlu | doJump | isLUI | isAUIPC;
+    wire        wrEn   = useAlu | doJump | isLUI | isAUIPC | isCSRread;
     // Byte/halfword selection of the loaded word. The lane comes from
     // ldOff (latched effective address bits [1:0]), the width from
     // ldFunct3: 000 LB, 001 LH, 010 LW, 100 LBU, 101 LHU. ldByte is the
@@ -189,9 +239,22 @@ module Processor (
     // holds load data, not an instruction, so the decoder outputs
     // (doJump/isLUI/isAUIPC) are garbage — a loaded 0xDEADBEEF decodes as
     // JAL and would otherwise write back PC + 4 instead of the data.
-    wire [31:0] wrData = ldState ? ldExt :
-                         doJump  ? {19'b0, pcPlus4} :
-                                   aluOut;
+    // CSR reads are OR-ed into the final arm instead of adding a fourth mux
+    // arm: during a CSR read the ALU output is provably 0 — in1 = rs1Val =
+    // RegisterBank[0] = 0, in2 = Iimm = 0xFFFFFC00/0xFFFFFC80 (negative),
+    // funct3 = SLT, and 0 < negative is false — so aluOut | csrVal = csrVal.
+    // For every other instruction isC00 is 0 and the OR is the identity.
+    // The writeback mux is split at bit 13 (the top of the JAL/JALR link
+    // {19'b0, pcPlus4}): above it the doJump arm is constant 0, so the
+    // ~doJump gate and the CSR OR share one LUT4 per bit (4 inputs:
+    // doJump, aluOut[i], isC00, cycles[i]); below it the link is real data
+    // and the OR stays a separate LUT4 per bit. This keeps the whole mux
+    // tree at 2 LUT4/bit above 13 and 3 below, instead of 3 everywhere.
+    wire [18:0] csrHi = {19{~doJump}} &
+                       (aluOut[31:13] | ({19{isC00}} & cycles[31:13]));
+    wire [12:0] csrLo = aluOut[12:0] | ({13{isC00}} & cycles[12:0]);
+    wire [31:0] wrData = {ldState ? ldExt[31:13] : csrHi,
+                          ldState ? ldExt[12:0] : (doJump ? pcPlus4 : csrLo)};
     // One register-file write port for both writeback states: the decoder
     // is only valid in EXECUTE, the latched load bookkeeping in LOAD.
     wire        doWrite = ldState ? ldActive : wrEn;
@@ -286,8 +349,9 @@ module Processor (
                     state    <= EXECUTE;
                 end
                 EXECUTE: begin
-                    if (isSYSTEM) begin
-                        // EBREAK: halt — state and PC stay put.
+                    if (isSYSTEM && !isCSRread) begin
+                        // EBREAK and every non-CSR-read SYSTEM encoding:
+                        // halt — state and PC stay put.
                     end else if (isLoad) begin
                         // Read strobe and data address are already driven
                         // combinationally; remember the byte lane and wait

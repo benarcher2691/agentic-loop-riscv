@@ -10,32 +10,6 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
 
    module to include into.
 
-- **Echo program** (task 21, phase 2): found the whole task already sitting uncommitted in the
-   working tree from an interrupted session — verified it instead of rewriting it. ROM: banner →
-   LED walk exactly ONCE (the old restart JAL is gone; `ADD x9,x9,x9; ANDI x9,x9,31` wraps 16→32→0
-   and `BNE x9,x0,LSTEP` falls through) → echo loop forever (LW 0x400020, ANDI 256 avail test,
-   SW byte to UART data, busy-wait bit 9, LEDS <- byte & 31, JAL back). Message moved word 22 → 30
-   (program now 30 code words). soc_tb 117 → 339 checks: concurrent `fork send_byte/recv_byte`
-   (the DUT starts echoing at the incoming frame's mid-stop, BEFORE send_byte returns — sequential
-   recv misses the echo's start edge), 'h' and 'i' echoed, LEDS == "i" & 31 = 9, LEDS hold 16 while
-   polling, PC in 80..116 during the poll, 33-word three-way ROM cross-check. memory_tb 1057 → 1065
-   (fill now starts at word 33). 4924 → 5154 checks; LCs unchanged (1082 LUT4 unflattened, pnr
-   1063 / 41.59 MHz), equiv clean.
-   Surprises: (1) the define split is deliberate — rtl/memory.v uses `ifdef FAST_SIM for the delay
-   constant while the bench copies use `ifdef BENCH; both are defined for every sim (Makefile
-   IVFLAGS) and both undefined for the bitstream, so they always agree, and the three-way ROM
-   cross-check would catch drift if that ever changed. (2) The echo's SW lands while the emitter
-   is idle by construction: each iteration's busy-wait exits only after the previous byte finished,
-   so no write is ever dropped — but the RX side is one byte deep, so the bench sends the next byte
-   only after the previous echo (a real host typing slowly is fine). (3) equiv's led_changes=6 with
-   no RX input: banner-dark + 5 walk steps; the echo loop just polls with LEDS=16 forever.
-    Ready for the human: `make prog`, then `screen /dev/cu.usbserial-*1 115200` — banner, one LED
-    walk, then every typed byte echoes back with its low 5 bits on the LEDs. Advice for 6 KB RAM
-    (next): Memory is 256 words / addr[9:2] everywhere; the task needs 1536 words and 13-bit
-    addressing (PC[12:0], fetch/load/store addr paths) — the ROM program sits at 0 so its byte
-    constants (message at 120) don't move; memory_tb's fill/expWord and the 256-word loops all
-    need the new bound; watch the LUT budget (1082 + wider adders, 68 headroom).
-
 - **Shrink the core, round 3 — the ALU** (task 22): landed the best provable structure:
   **ALU 485 → 434 LUT4** (total 1082 → 1031, pnr 1063 → 1033 LCs / 80%, Fmax 41.59 → 41.09 MHz,
   all 5154 checks + equiv unchanged). The task's targets (ALU ≤ 320, total ≤ 980) are **proven
@@ -138,4 +112,48 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
   > The scratch copies were stale (pre-fix) — that explains 492 vs 530: the correct 32-bit read path costs +38. So the read path is already tight. The suspect is now the counter itself (~175 LUT4 for a 64-bit +1 is way over the ~64 expected). Let me see the Processor cell breakdown:
   > Processor local: 530 LUT4 + 83 SB_CARRY (the counter's carry chain) and the regfile mapped to 4 BRAMs with `rs1Val/rs2Val` absorbed into BRAM output registers. Let me quantify each piece with ablation variants in the SOC context:
   > vA got the stale scratch copy — let me redo it from the repo's current file and apply the ablation edits:
+
+- **Handoff captured by loop.sh — iteration 1 ended without ticking its task (tree: RED). The session's last message, verbatim:**
+
+  > HEAD flat = 1032 LUT4/110 carry (pnr 1100); old486 flat = 1101/140 (pnr ≤1150); v6 flat = 1115/140 (pnr 1187). My slicing helped unflattened but hurt the flattened cone. Let me isolate which change hurt flat: measure v3c (original aluIn2) and v5 (ternary slice)flattened.
+  > v3c flat = 1106, v5 = 1109, v6 = 1115 — the slicing costs a little flat but saved huge unflat. Critical realization: the old486 pnr LC was likely >1150 all along (the stat rule checks unflattened FIRST, so the pnr LC grep never ran). I need **both** gates ≤1150. Let me measure the real pnr LC for v3c, and flat-ablate the big blocks to find flatfat.
+  > v3c pnr = 1178 — even the original aluIn2 fails pnr; the feature costs ~78 pnr LCs (1100→1178) but pnr headroom is only 50. I need ~28-37 more LCs from the flat netlist. Flat ablations on the v6 base to find theslop.
+  > **MAXIMUM STEPS REACHED — session must stop here. `make check` is RED (pnr gate), work is uncommitted. Below is the full state and handoff.**
+  > 
+  > ## What this session accomplished
+  > 
+  > **Task:** "Cycle counter, part 1: a 32-bit counter and its CSR read" (first unchecked in TASKS.md). The previous session left the RTL functionally complete but `make stat` red (1191 unflattened > 1150). All 15 benches already passed (10357 checks), including `tb/cycle_tb.v` (C1–C5: read-diff = 3×instr+1/load, cycleh→0, x0 dest, EBREAK halt + free-run, other SYSTEM encodings halt).
+  > 
+  > **This session's work was pure area optimization.** Measurements (yosys `synth_ice40 -top SOC -noflatten` per module, plus flattened + nextpnr):
+  > 
+  > | variant | unflat total | flat LUT4 | pnr LC |
+  > |---|---|---|---|
+  > | HEAD (pre-task) | 1108 (Proc 406) | 1032 | 1100 |
+  > | session start (old tree) | 1191 (Proc 486) | 1101 | ~1178 (never checked!) |
+  > | v3c: cheap decode + wrData hi/lo split | 1182 (Proc 477) | 1106 | 1178 |
+  > | **v6 (now in repo): + aluIn2 2-bit-case slice** | **1145 (Proc 440)** | 1115 | **1187** |
+  > 
+  > Key findings:
+  > 1. **The counter itself is 33 LUT4 + 30 SB_CARRY + 32 SB_DFFSR** (floor; measured in isolation). Decode+control = +13. The wrData OR arm = +25 as written by the previous session.
+  > 2. **The old `aluIn2` 4-way priority mux cost 98 LUT4 unflattened (abc maps 7-input muxes at 3 LUT4/bit)**. Since `Simm[31:5] == Iimm[31:5]` and `Uimm[11:0] == 0`, it slices into a 2-bit `case` at 1–2 LUT4/bit → saved 37 unflattened (486→440... combined with the other edits).
+  > 3. **The stat rule checks unflattened FIRST, then pnr LC — so the pnr LC gate was never reached before.** The feature costs ~78 pnr LCs (1100→1178) but pnr headroom is only 50. **Both gates must be ≤1150; the task's "~50 LUT" estimate is ~25 too optimistic.**
+  > 
+  > ## Current repo state (uncommitted)
+  > 
+  > `rtl/processor.v` has three semantics-preserving edits (all benches pass, `make sim` = 10357 checks in 15 benches, equiv clean, timing 37.25 MHz):
+  > - Cheap CSR decode: `isCSRaddr = (Iimm[11:8]==4'hC) & (Iimm[6:0]==0)`, `isC00 = isCSRread & ~Iimm[7]`
+  > - `aluIn2` sliced into a 2-bit case (in2Hi/in2Mid/in2LoS)
+  > - `wrData` split at bit 13 so the CSR OR absorbs into the `~doJump` gate above the link's top bit
+  > 
+  > `make check` result: **unflattened 1145 ≤ 1150 PASSES; pnr ICESTORM_LC 1187 > 1150 FAILS.**
+  > 
+  > ## Remaining work (next session)
+  > 
+  > Need **−37 pnr LCs** from the flattened netlist (1115 LUT4 + ~72 unshared carries). Recommended path, in order:
+  > 1. **Run the flat ablations I had just set up** (dirs `fa1/fa3/fa4` in the scratch dir, copies of v6 with one block killed each: `mem_wdata=0`, `ldExt=0`, `aluIn2=Iimm`) to find where the *flattened* netlist has slop vs floor. Unflat floors already measured: stData 32 (at floor), ldExt ~66, PCmux ~26.
+  > 2. Try `v7`: keep the aluIn2 case slice for [31:5] but leave [4:0] as the original 4-way ternary (the `in2Lo` pre-mux is the likely flat-carry-packing culprit; costs +5 unflat → 1150 exactly, still passes).
+  > 3. If still over: the honest conclusion per the task text ("if it goes over, that is a real problem, not a proxy one — stop and note it") is that **the feature fundamentally costs ~70 LUT4 against ~42-50 headroom**; either the budget must rise or a "shrink round 4" (flat-context) must precede this task. Document in PROGRESS.md and leave unchecked.
+  > 4. Do NOT commit as-is: `make check` is red. Either fix pnr or revert `rtl/processor.v` to HEAD (git checkout) and leave a PROGRESS note with this table.
+  > 
+  > Scratch dir with all variants/logs: `/var/folders/6m/bgvxvyjs0zv6g9fcgvcclzyh0000gn/T/opencode/cyc1a/` (v1–v6, a1/a4, fa1/fa3/fa4, f0, ctr.v, *.log).
 

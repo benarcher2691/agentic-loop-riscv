@@ -391,3 +391,29 @@
    (lib SRLI is buggy, task-17 note); copy uart_rx_tb's `send_soc` transmitter model into
    soc_tb for the "hi" round-trip; LEDS = byte & 31 after the walk. 68 LUT4 headroom left.
 
+- **Echo program** (task 21, phase 2): found the whole task already sitting uncommitted in the
+   working tree from an interrupted session — verified it instead of rewriting it. ROM: banner →
+   LED walk exactly ONCE (the old restart JAL is gone; `ADD x9,x9,x9; ANDI x9,x9,31` wraps 16→32→0
+   and `BNE x9,x0,LSTEP` falls through) → echo loop forever (LW 0x400020, ANDI 256 avail test,
+   SW byte to UART data, busy-wait bit 9, LEDS <- byte & 31, JAL back). Message moved word 22 → 30
+   (program now 30 code words). soc_tb 117 → 339 checks: concurrent `fork send_byte/recv_byte`
+   (the DUT starts echoing at the incoming frame's mid-stop, BEFORE send_byte returns — sequential
+   recv misses the echo's start edge), 'h' and 'i' echoed, LEDS == "i" & 31 = 9, LEDS hold 16 while
+   polling, PC in 80..116 during the poll, 33-word three-way ROM cross-check. memory_tb 1057 → 1065
+   (fill now starts at word 33). 4924 → 5154 checks; LCs unchanged (1082 LUT4 unflattened, pnr
+   1063 / 41.59 MHz), equiv clean.
+   Surprises: (1) the define split is deliberate — rtl/memory.v uses `ifdef FAST_SIM for the delay
+   constant while the bench copies use `ifdef BENCH; both are defined for every sim (Makefile
+   IVFLAGS) and both undefined for the bitstream, so they always agree, and the three-way ROM
+   cross-check would catch drift if that ever changed. (2) The echo's SW lands while the emitter
+   is idle by construction: each iteration's busy-wait exits only after the previous byte finished,
+   so no write is ever dropped — but the RX side is one byte deep, so the bench sends the next byte
+   only after the previous echo (a real host typing slowly is fine). (3) equiv's led_changes=6 with
+   no RX input: banner-dark + 5 walk steps; the echo loop just polls with LEDS=16 forever.
+    Ready for the human: `make prog`, then `screen /dev/cu.usbserial-*1 115200` — banner, one LED
+    walk, then every typed byte echoes back with its low 5 bits on the LEDs. Advice for 6 KB RAM
+    (next): Memory is 256 words / addr[9:2] everywhere; the task needs 1536 words and 13-bit
+    addressing (PC[12:0], fetch/load/store addr paths) — the ROM program sits at 0 so its byte
+    constants (message at 120) don't move; memory_tb's fill/expWord and the 256-word loops all
+    need the new bound; watch the LUT budget (1082 + wider adders, 68 headroom).
+
