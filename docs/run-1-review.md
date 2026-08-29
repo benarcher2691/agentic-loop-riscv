@@ -90,3 +90,11 @@ Attack surface is nil (UART transmit only; `RXD` unused). Robustness findings:
 - `brew tap riscv-software-src/riscv && brew install riscv-gnu-toolchain` unlocks the tutorial's steps 19–24: C programs, a UART receiver, running from SPI flash.
 - Optional third shrink (ALU shifter/mux tree) if the goal is the tutorial's ~300-LUT core.
 - The comparison experiment that is *not* worth running: glm-5.3 on this whole list (~$25). Worth running: glm-5.3 on just the two shrink tasks.
+
+## 8. Hardware result (morning of 2026-08-29)
+
+First flash of `demo-18fc833.bin`: **dark LEDs, no banner** — despite 4,814 passing checks and a green gate-level co-sim. Cause: `Clockworks` released reset after 16 cycles (1.3 µs), but iCE40 block RAM is not readable that soon after configuration; the CPU fetched garbage. Simulated BRAM is ready at time 0, so no bench could see it. Handed to the loop as a task with the explanation: fixed in one iteration (`43cc96e`, 423 s, $0.018) — `RESET_CYCLES` = 65,536 on hardware, 16 under `FAST_SIM`, plus checks that CPU and LEDs hold reset.
+
+Second flash, `demo-43cc96e.bin`: `make uart` prints `Loop RISC-V`, LEDs walk. **Confirmed on the board.** Project total: 32 sessions, $0.91.
+
+The lesson is the one every hardware engineer already knows, now demonstrated by a loop: the verifier can only encode the physics you told it about. The human with the board is still part of the loop — for exactly one fact, but a fact that no amount of simulation would have surfaced.
