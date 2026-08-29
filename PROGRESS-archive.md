@@ -477,3 +477,33 @@
   > 
   > Committed as `75c086f`. Stopping here — one task per session.
 
+- **6 KB of RAM** (task 23, phase 2): found the task already merged — the WIP branch
+   (ae28291, parked at 1162 LUT4 over budget) was merged as bc21d76 once shrink round 3
+   freed ALU 485→434; this session verified the merge instead of rewriting it. Memory is
+   1536 words indexed `mem_addr[12:2]`; Processor PC arithmetic is 13-bit (`pc13`,
+   `pcPlus4`, `pcPlusImm13`, PC updates `{19'b0, …}`), fetch addr `{19'b0, pc13}`,
+   load/store addr keeps bit 22 + `aluOut[12:0]` (bits [21:13] dropped — IO decode
+   unchanged; soc.v diff is a comment only). Benches: memory_tb 1065 → 6194 (full
+   1536-word read + unaligned-offset sweeps, SW at the last word 6140, words 256/4096,
+   SB/SH lane isolation above 1 KB, read-backs), programs_tb 90 → 124 (P5: trampoline
+   JAL 0→4096 — the old 10-bit PC path would wrap 4096&0x3FF=0 and spin, so reaching the
+   program at all proves the 13-bit JAL target; data at 5120, sum 100..800 = 3600,
+   SW/LW round-trip at 5152, hand-encoding cross-check). 5154 → 10317 checks, equiv
+   clean (40000 cycles, 0 mismatches). Numbers: 1108 LUT4 unflattened (budget 1150),
+   pnr 1100 LCs / 85%, Fmax 38.85 MHz.
+   **BRAM: 16/16, not the task's estimated 14 — and 16 is the floor.** Measured split
+   (yosys stat per module): MEM = 12 (1536×32 = 49152 bits = exactly 12 RAM4K), regfile
+   = 4. The task's "register file uses 2" is impossible on this part: RAM4K's widest
+   mode is 256×16, so one 32-bit sync read port needs 2 blocks, and 2 read ports + 1
+   write port need 2 copies → 4. It fits the part exactly (pnr PASS) but ZERO BRAM
+   headroom remains — any future BRAM need must shrink the regfile (narrow/time-mux the
+   read ports) or live inside the 6 KB.
+   Advice for RDCYCLE (next): decode in Processor as `isSYSTEM && funct3==010 &&
+   Iimm[11:0] ∈ {0xC00, 0xC80}` — isSYSTEM currently halts unconditionally, so add the
+   counter-read arm BEFORE the halt and keep every other isSYSTEM encoding halting
+   (programs_tb's waitHalt and every EBREAK bench depend on it). The 64-bit counter is
+   ~64 FFs (not LUTs) but the rd read mux into wrData is a 32-bit 2:1 (~32 LUT4); LUT
+   headroom is 42 (1108/1150) — tight but enough. The counter must free-run through
+   reset (or at least not reset with the CPU: "free-running" per the task) and benches
+   will count instructions between reads: 3 cycles/instr, +1 per load (4-cycle loads).
+

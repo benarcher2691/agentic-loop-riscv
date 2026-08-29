@@ -11,9 +11,39 @@ Architecture target, so no task requires rewriting an earlier one: `SOC` (clock,
 
 Same rules. The SoC currently has 1 KB RAM, UART transmit only, and no way to read time.
 
-- [x] **Cycle counter, part 2: real-time delays in the demo.** *(Done 2026-08-29. Per-step loop: `CSRRS` start → `CSRRS`/`SUB`/`BLTU` diff loop (9 cycles/iter); DELAY 300 sim / 3 000 000 hw. Period model `9·ceil(DELAY/9)+21` is exact — measured 327 on all 4 steps; wrap exercised by a bench deposit of 0xFFFFFF00, cycleh 0→1 checked.)* Replace the counted delay loop in the resident program with `RDCYCLE`-based waiting: read the counter, then loop until it has advanced by `DELAY` cycles (3 000 000 on hardware = 0.25 s; a small value under `` `ifdef FAST_SIM ``). Handle the 32-bit wrap by comparing the *difference*. Bench: `tb/soc_tb.v` checks the LED period equals `DELAY` (± 3 instructions) using the bench's own cycle count.
-
 # Phase 3 — hardware in the loop
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -61,6 +91,22 @@ The board becomes a test fixture the loop can drive over the UART. The monitor a
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 are built and proven in simulation by the loop (the serial models in the benches already speak both
 
 
@@ -77,7 +123,55 @@ are built and proven in simulation by the loop (the serial models in the benches
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 directions); the host-side tool and `make hwcheck` are supervisor work (they need the board to test).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -147,7 +241,55 @@ directions); the host-side tool and `make hwcheck` are supervisor work (they nee
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 Idea, not yet a task: a fixed webcam over the board as a verifier for outputs that have no register to
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -179,7 +321,39 @@ read back (OLED, LED matrix, VGA). Capture a frame (`imagesnap`/`ffmpeg` — one
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 pixel-compare fixed regions against an image rendered by the simulation (deterministic, alignment-
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -211,6 +385,22 @@ sensitive) or hand the frame to a vision-capable model with a yes/no question (r
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 five LEDs the UART monitor (phase 3) is the better sensor; revisit this when the first visual peripheral
 
 
@@ -227,7 +417,71 @@ five LEDs the UART monitor (phase 3) is the better sensor; revisit this when the
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 lands. Not a `- [ ]` item on purpose — the loop must not pick it up.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

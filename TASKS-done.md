@@ -48,3 +48,5 @@
 
 - [x] **Cycle counter, part 1: the counter and its CSR read (built 64-bit — see below).** *(Done 2026-08-29 by an Opus 4.8 investigation, verified independently. Decision D2 (docs/decisions.md) REVERSED D1: the counter is the RISC-V-spec 64-bit RDCYCLE/RDCYCLEH after the ALU was refactored to a single shared add/sub, which freed enough logic — final 1139/1280 cells, 141 free, all 10363 checks + gate-level equiv green.)*
 
+- [x] **Cycle counter, part 2: real-time delays in the demo.** *(Done 2026-08-29. Per-step loop: `CSRRS` start → `CSRRS`/`SUB`/`BLTU` diff loop (9 cycles/iter); DELAY 300 sim / 3 000 000 hw. Period model `9·ceil(DELAY/9)+21` is exact — measured 327 on all 4 steps; wrap exercised by a bench deposit of 0xFFFFFF00, cycleh 0→1 checked.)* Replace the counted delay loop in the resident program with `RDCYCLE`-based waiting: read the counter, then loop until it has advanced by `DELAY` cycles (3 000 000 on hardware = 0.25 s; a small value under `` `ifdef FAST_SIM ``). Handle the 32-bit wrap by comparing the *difference*. Bench: `tb/soc_tb.v` checks the LED period equals `DELAY` (± 3 instructions) using the bench's own cycle count.
+
