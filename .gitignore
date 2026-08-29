@@ -6,3 +6,6 @@ loop.log
 .DS_Store
 bitstreams/
 __pycache__/
+w.v
+w.vvp
+*.vvp
