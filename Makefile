@@ -3,6 +3,7 @@
 #   make check   sim + lint + synth + pnr + stat   <- what the loop verifies
 #   make prog    flash build/SOC.bin to the iCEstick (human only)
 #   make uart    read the board's UART on FTDI channel B (human only)
+#   make hwtest  flash + expect the banner on the UART: PASS/FAIL (human only)
 TOP      ?= SOC
 DEVICE   ?= hx1k
 PACKAGE  ?= tq144
@@ -15,7 +16,7 @@ TBS      := $(sort $(wildcard tb/*_tb.v))
 SIMOK    := $(patsubst tb/%_tb.v,$(BUILD)/%.simok,$(TBS))
 IVFLAGS  := -g2012 -Wall -Wno-timescale -DBENCH -DFAST_SIM -I tb -I lib -I rtl   # FAST_SIM: short delays; BENCH: assembler self-checks
 
-.PHONY: check sim lint synth pnr equiv stat prog uart clean
+.PHONY: check sim lint synth pnr equiv stat prog uart hwtest clean
 
 check: sim lint synth pnr equiv stat
 	@echo "CHECK: OK"
@@ -80,6 +81,8 @@ prog: $(BUILD)/$(TOP).bin
 	iceprog $<
 uart:
 	python3 tools/uart.py
+hwtest: $(BUILD)/$(TOP).bin   ## flash and expect the UART banner (human only)
+	python3 tools/hwtest.py $<
 
 $(BUILD):
 	mkdir -p $(BUILD)

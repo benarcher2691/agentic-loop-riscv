@@ -19,6 +19,8 @@
       "make -s *": "allow",
       "make prog": "deny",
       "make uart": "deny",
+      "make hwtest": "deny",
+      "python3 tools/hwtest.py*": "deny",
       "iceprog*": "deny",
       "python3 tools/uart.py*": "deny",
       "iverilog *": "allow",
