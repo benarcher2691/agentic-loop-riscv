@@ -150,12 +150,16 @@ module soc_tb;
 
     `CHECK_EQ(TXD, 1'b1, "TXD idles high before the first byte")
 
-    // Power-on reset: 16 dark cycles, then resetn released, PC at 0.
-    for (i = 0; i < 16; i = i + 1) begin
+    // Power-on reset: resetn low through the first 15 sampled cycles, released
+    // by the 16th posedge (POR counter reaches 16); LEDS stay dark throughout.
+    for (i = 0; i < 15; i = i + 1) begin
       @(posedge CLK); #1;
-      `CHECK_EQ(LEDS, 5'd0, "LEDS dark during reset")
+      `CHECK_EQ(dut.clockworks.resetn, 1'b0, "resetn low during power-on reset")
+      `CHECK_EQ(LEDS, 5'd0, "LEDS dark while resetn is low")
     end
+    @(posedge CLK); #1;
     `CHECK_EQ(dut.clockworks.resetn, 1'b1, "reset released after 16 cycles")
+    `CHECK_EQ(LEDS, 5'd0, "LEDS dark while resetn is low")
     `CHECK_EQ(dut.processor.PC, 32'd0, "PC starts at 0")
 
     // The banner: 12 bytes, in order, with clean framing. A broken busy-wait

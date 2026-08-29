@@ -342,3 +342,23 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    clocks ≈ 1.2 ms. Ready for the human: `make prog` then `make uart` shows the banner once,
    LEDs walk at 4 Hz.
 
+- **Hardware fix: hold reset until the block RAM is ready** (task 19): Clockworks gained
+   `parameter RESET_CYCLES` — 65536 default (hardware: iCE40 BRAM unreadable for several µs
+   after config; 65536 cycles = 5.46 ms at 12 MHz), 16 under `ifdef FAST_SIM` so every bench
+   keeps its timing. Counter width is `$clog2(RESET_CYCLES)+1`, sticks at its terminal value
+   via the old MSB-tap (`resetn = por[MSB]`) — so RESET_CYCLES must be a power of two (all
+   uses are: 16/64/65536); a general compare would cost ~8 LUT4 for nothing. Benches: +65 in
+   clockworks_tb (RESET_CYCLES=64 instance: low through posedge 63, high after 64, stays high),
+   +3 in processor_tb (`state == FETCH_INSTR` during reset, PC=0 was already checked), +15 in
+   soc_tb (explicit `resetn` low + LEDS dark per cycle). 4814 → 4897 checks. Numbers:
+   Clockworks 6 → 18 LUT4 unflattened (17-bit counter), total 1031 → 1043 (budget 1150),
+   pnr 981 → 986 LCs, Fmax 43.35 → 45.54 MHz, equiv 0 mismatches.
+   Surprises: (1) the Makefile's equiv target passes `-DFAST_SIM` to yosys (line 60) — that is
+   what keeps the netlist and the RTL sim in agreement at 16 cycles; synth/pnr/lint compile
+   without it, so only the bitstream sees 65536. Do not "simplify" that flag away. (2) soc_tb's
+   old "16 dark cycles" loop sampled *after* the 16th posedge, where resetn is already high —
+   the LEDS-only checks masked it because LEDS stays dark one cycle longer; the resetn-low
+   check caught it immediately. Sampled-cycle vs counter-cycle off-by-one is the trap here
+   (clockworks_tb's original 15+1 structure already encodes it). All tasks in TASKS.md are
+   now checked — the design is ready for the human to run `make prog` / `make uart`.
+

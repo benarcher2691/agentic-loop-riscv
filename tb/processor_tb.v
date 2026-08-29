@@ -135,6 +135,7 @@ module processor_tb;
     repeat (3) begin
       @(posedge clk); #1;
       `CHECK_EQ(dut.PC, 32'd0, "PC held at 0 during reset")
+      `CHECK_EQ(dut.state, 2'd0, "state held in FETCH_INSTR during reset")
     end
     `CHECK_EQ(mem_rstrb, 1'b1, "strobe high while reset holds the FSM in FETCH_INSTR")
     `CHECK_EQ(mem_addr, 32'd0, "fetch address is PC = 0")
