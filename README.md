@@ -116,6 +116,7 @@ encodes the physics you told it about; the person holding the board is still par
 | `Makefile` | The verifier flow; `LC_BUDGET` |
 | `TASKS.md`, `PROMPT.md`, `AGENTS.md`, `PROGRESS.md`, `loop.sh`, `opencode.json`, `.opencode/` | The loop — identical in shape to the kit |
 | `docs/run-1-review.md` | Cost per iteration, code quality, robustness, the supervisor's log, lessons |
+| `docs/decisions.md` | Architecture-decision log (e.g. why the cycle counter is 32-bit, not the ISA's 64-bit) |
 
 ## References and attribution
 
