@@ -14,17 +14,50 @@ module Memory (
 );
     reg [31:0] MEM [0:255];
 
-    // ROM program: small ADDI demo. LEDS (= x1[4:0]) walk 1,3,7,15,31, then
-    // EBREAK halts the Processor. tb/memory_tb.v and tb/soc_tb.v keep
-    // hand-assembled copies of these words.
+    // ROM program: the hardware demo. Prints "Loop RISC-V\n" over the UART
+    // (byte loads from the message at word 22, busy-wait on the status word
+    // between bytes), then walks a 1 across LEDS (1,2,4,8,16, restart)
+    // forever with a software delay loop. The delay constant is shrunk under
+    // `ifdef BENCH so simulations stay fast; on hardware it is 500000
+    // iterations x 6 cycles = 3.0M cycles = 0.25 s per step at 12 MHz.
+    // tb/soc_tb.v and tb/memory_tb.v keep independent copies of these words.
     `include "../lib/riscv_assembly.v"
+    integer WBYTE = 12, WBUSY = 20, LSTEP = 48, WDELAY = 60;
     initial begin
-        ADDI(x1, x0, 1);
-        ADDI(x1, x1, 2);
-        ADDI(x1, x1, 4);
-        ADDI(x1, x1, 8);
-        ADDI(x1, x1, 16);
-        EBREAK();
+        LUI(x5, 32'h00400000);   // x5 = 0x400000 IO base
+        ADDI(x6, x0, 88);        // x6 = &message (byte 88 = word 22)
+        ADDI(x7, x0, 12);        // 12 banner bytes
+        Label(WBYTE);
+        LB(x10, x6, 0);          // x10 = *p
+        SW(x10, x5, 8);          // UART data <- char
+        Label(WBUSY);
+        LW(x8, x5, 16);          // UART status
+        ANDI(x8, x8, 512);       // busy = bit 9
+        BNE(x8, x0, LabelRef(WBUSY));
+        ADDI(x6, x6, 1);         // p++
+        ADDI(x7, x7, -1);        // count--
+        BNE(x7, x0, LabelRef(WBYTE));
+        ADDI(x9, x0, 1);         // LED pattern = 1
+        Label(LSTEP);
+        SW(x9, x5, 4);           // LEDS <- pattern
+`ifdef BENCH
+        ADDI(x14, x0, 2);        // ~30 cycles per step in simulation
+        ADDI(x14, x14, 0);
+`else
+        LUI(x14, 32'h0007A000);  // 500000 = 0x7A120 ...
+        ADDI(x14, x14, 32'h120); // ... x 6 cycles = 0.25 s per step at 12 MHz
+`endif
+        Label(WDELAY);
+        ADDI(x14, x14, -1);
+        BNE(x14, x0, LabelRef(WDELAY));
+        ADD(x9, x9, x9);         // pattern <<= 1
+        ANDI(x9, x9, 31);        // keep 5 bits
+        BNE(x9, x0, LabelRef(LSTEP));
+        ADDI(x9, x0, 1);         // restart the walk
+        JAL(x0, LabelRef(LSTEP));
+        DATAB(8'h4C, 8'h6F, 8'h6F, 8'h70);   // "Loop"
+        DATAB(8'h20, 8'h52, 8'h49, 8'h53);   // " RIS"
+        DATAB(8'h43, 8'h2D, 8'h56, 8'h0A);   // "C-V\n"
         endASM();
     end
 

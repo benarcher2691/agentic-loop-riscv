@@ -7,6 +7,11 @@ module equiv_tb;
   SOC       rtl (.CLK(CLK), .RXD(RXD), .TXD(TXD_r), .LEDS(LEDS_r));
   SOC_synth             syn (.CLK(CLK), .RXD(RXD), .TXD(TXD_s), .LEDS(LEDS_s));
   always #41.667 CLK = ~CLK;
+  // The emitter's data/o_ready regs have no power-on values; on hardware the
+  // FFs power up 0 (which the synthesized side models). The RTL side needs
+  // the same kick (see io_tb/soc_tb) or its UART handshake stays X and the
+  // demo program's banner writes are never accepted.
+  initial rtl.uart.data = 10'd0;
   integer cyc = 0, mism = 0, changes = 0; reg [4:0] last = 5'bx;
   always @(posedge CLK) begin
     cyc = cyc + 1;

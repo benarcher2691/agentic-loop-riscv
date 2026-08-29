@@ -320,3 +320,25 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    Note: equiv only exercises the ROM program (LEDS/TXD ports), IO logic is covered by
    io_tb alone; soc_tb's LEDS expectations are now "dark" (same 62-check count).
 
+- **Hardware demo program** (task 18): ROM is now the real demo — 22 code words + 3 message
+   words: LB/SW banner loop ("Loop RISC-V\n", 12 bytes from word 22, busy-wait on status bit 9
+   via LW+ANDI 512+BNE), then a LED walk 1,2,4,8,16→restart forever (ADD x9,x9,x9 / ANDI 31 /
+   restart JAL) paced by a countdown loop: `ifdef BENCH` delay=2 (~30 cycles/step), hardware
+   LUI 0x7A000+ADDI 0x120 = 500000×6 = 3.0M cycles = 0.25 s/step at 12 MHz. soc_tb rewritten
+   (102 checks): 12-byte mid-bit receiver, LEDS-dark-until-banner, full cycle 1,2,4,8,16→1,
+   step-gap ∈ [25,60], PC-in-loop liveness, three-way ROM check (python-verified hand words vs
+   lib-assembled bench copy vs dut.memory.MEM). memory_tb re-assembles the program itself
+   (fill now starts at word 25). 4755 → 4814 checks; LCs unchanged (1031 LUT4 unflattened,
+   981 pnr, 43.35 MHz). equiv needed a fix: the ROM now uses the UART, so the RTL instance's
+   X-poisoned emitter handshake (no power-on values; netlist FFs power up 0) diverged from the
+   netlist at cycle 34 — added the same `initial rtl.uart.data = 0` kick io_tb/soc_tb already
+   use to tools/equiv_tb.v (sim-only artifact, hardware unaffected).
+   Surprises: (1) module-level `integer i` is shared across initial blocks — the assembly
+   block's check loop at t=1ns clobbered the main block's reset-loop counter mid-iteration
+   (15 checks silently skipped); the assembly block now has its own `wi`. (2) LB is funct3
+   000, not 010 (that's LW) — my python encoder call was wrong, the lib was right again.
+   (3) Emitter acceptance is every-clock (1-cycle latency), so the SW→busy-wait pattern has
+   no race; busy lasts ~1166 clocks/byte (1060 transmit + ~106 ready delay) → banner ≈ 14k
+   clocks ≈ 1.2 ms. Ready for the human: `make prog` then `make uart` shows the banner once,
+   LEDs walk at 4 Hz.
+
