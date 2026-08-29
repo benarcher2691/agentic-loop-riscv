@@ -36,6 +36,8 @@ module Processor (
     output wire [31:0] mem_addr,
     input  wire [31:0] mem_rdata,
     output wire        mem_rstrb,
+    output wire [31:0] mem_wdata,   // store data (lane-replicated, see below)
+    output wire [3:0]  mem_wmask,   // byte-write enables, one per memory lane
     output reg  [31:0] x1 = 32'd0   // mirror of RegisterBank[1], starts at 0
 );
     localparam [1:0] FETCH_INSTR = 2'd0,
@@ -93,17 +95,20 @@ module Processor (
     // decides the branch. The second ALU operand is therefore rs2 for
     // branches as well — Iimm would corrupt the compare.
     wire        useAlu = isALUreg | isALUimm;
-    wire [31:0] aluIn2 = (isALUreg | isBranch) ? rs2Val : Iimm;
+    // Stores add their Simm (not Iimm) through the same ALU adder; branches
+    // compare rs2, everything else adds Iimm.
+    wire [31:0] aluIn2 = (isALUreg | isBranch) ? rs2Val :
+                         isStore            ? Simm  : Iimm;
     wire        aluF75 = isALUreg ? funct7[5] :
                          (isALUimm && funct3 == 3'b101) ? funct7[5] : 1'b0;
 
     wire [31:0] aluOut;
     wire        aluEQ, aluLT, aluLTU;   // EQ/LT/LTU: used by branches later
-    // Loads reuse the ALU's adder as the effective-address adder: forcing
-    // funct3 to 000 (with aluF75 already 0 for loads) makes aluOut the
-    // rs1 + Iimm address. EQ/LT/LTU do not depend on funct3, so branches
-    // are unaffected.
-    wire [2:0]  aluFunct3 = isLoad ? 3'b000 : funct3;
+    // Loads and stores reuse the ALU's adder as the effective-address
+    // adder: forcing funct3 to 000 (with aluF75 already 0 for both) makes
+    // aluOut the rs1 + immediate address. EQ/LT/LTU do not depend on
+    // funct3, so branches are unaffected.
+    wire [2:0]  aluFunct3 = (isLoad | isStore) ? 3'b000 : funct3;
     ALU alu (
         .in1      (rs1Val),
         .in2      (aluIn2),
@@ -185,11 +190,43 @@ module Processor (
 
     // During EXECUTE of a load the memory port reads the data address
     // instead of the PC; the LOAD state drops the strobe so mem_rdata
-    // keeps holding the loaded word. Only the low 10 address bits reach
-    // the memory (1 KB), so the fetch/load mux is 10-bit, not 32.
+    // keeps holding the loaded word. During EXECUTE of a store the same
+    // address mux carries the store target; the write is committed by the
+    // memory on the edge that leaves EXECUTE, so stores need no wait
+    // state. Only the low 10 address bits reach the memory (1 KB), so the
+    // fetch/load/store mux is 10-bit, not 32.
     wire loadRead   = isLoad & (state == EXECUTE);
-    assign mem_addr  = loadRead ? {22'b0, aluOut[9:0]} : {22'b0, pc10};
+    wire storeWrite = isStore & (state == EXECUTE);
+    assign mem_addr  = (loadRead | storeWrite) ? {22'b0, aluOut[9:0]}
+                                               : {22'b0, pc10};
     assign mem_rstrb = (state == FETCH_INSTR) | loadRead;
+
+    // Store data and byte enables. The addressed lane is selected by the
+    // memory's wmask, so the data word simply replicates the stored unit
+    // across all four lanes (pure wiring): SB repeats its byte, SH its
+    // halfword, SW uses the register as-is. The lane comes from the
+    // effective address bits [1:0] (aluOut during EXECUTE), the width from
+    // funct3: 000 SB, 001 SH, 010 SW.
+    wire [31:0] stData = (funct3 == 3'b000) ? {4{rs2Val[7:0]}}  :  // SB
+                         (funct3 == 3'b001) ? {2{rs2Val[15:0]}} :  // SH
+                                              rs2Val;              // SW
+    reg  [3:0]  stMask;
+    always @(*) begin
+      case (funct3)
+        3'b000: begin                                   // SB: one byte
+          case (aluOut[1:0])
+            2'd0:    stMask = 4'b0001;
+            2'd1:    stMask = 4'b0010;
+            2'd2:    stMask = 4'b0100;
+            default: stMask = 4'b1000;
+          endcase
+        end
+        3'b001:   stMask = aluOut[1] ? 4'b1100 : 4'b0011;  // SH: two bytes
+        default:  stMask = 4'b1111;                        // SW: whole word
+      endcase
+    end
+    assign mem_wdata = stData;
+    assign mem_wmask = storeWrite ? stMask : 4'b0000;
 
     // Branch condition: funct3 selects among the ALU's EQ/LT/LTU and their
     // complements (BGE/BNE/BGEU). Branches write no rd — isBranch stays out

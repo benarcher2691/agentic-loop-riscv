@@ -214,3 +214,27 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    funct3), and mem_addr is already 10-bit; keep the store data on rs2Val (already
    latched). Watch the unflattened total after the change; round-2 shrink (ALU ~490 →
    ~250 per the harness note) comes only after Stores.
+- **Stores** (task 15): Memory gained `mem_wdata`/`mem_wmask[3:0]` (four per-lane write
+   guards in the same always block as the read). Processor store path: `aluIn2` picks Simm
+   for stores, `aluFunct3` forced 000 for `isLoad|isStore` (shared address adder), and
+   `storeWrite = isStore & (state == EXECUTE)` gates both the mem_addr mux and mem_wmask —
+   the gate is load-bearing because the decoder still decodes the old store during the
+   following FETCH_INSTR (mem_rdata holds) and would otherwise write to the *fetch* address.
+   stData replicates the byte/halfword across all four lanes (pure wiring), stMask comes
+   from funct3 + aluOut[1:0]; stores take the plain 3 cycles, no wait state. New
+   tb/stores_tb.v (81 checks, 4693 total): per-cycle SB walk (no read strobe, wmask/wdata,
+   write commits on the edge leaving EXECUTE), SB 0..3 lane isolation over poison, SH 0/2,
+   SW, SW-over-SB clearing the SB's byte, sign-bit 0xFF/0x80/0xFFFF via LB/LBU/LH/LHU,
+   negative-offset SB, poison neighbours intact, 39-word expWord cross-check.
+   Numbers: 885 → 1010 unflattened LUT4 (Processor 377→451, Memory 0→51 write-merge; ALU
+   485 untouched), pnr 914 LCs / 6 BRAMs / 46.5 MHz, budget 1150 OK.
+   Surprises: (1) first program put the data area at 0x80 while the program had grown to
+   39 words (0x98) — the stores overwrote their own program mid-run; data base moved to
+   0xA0. (2) Four expectation slips, DUT right every time: MEM[44] had 0x80 in the wrong
+   byte, MEM[45] forgot the first SH already wrote 0xFFFF, the -8-offset SB landed on byte
+   0 (0xA8-8=0xA0) with x2=0x44 not 0x22 (rebased x19 to 0xA9), and expWord kept the old
+   128/136 immediates. (3) My python slicer encoded loads with ADDI's opcode 0x13 — check
+   the script against the spec formula too, it had its own bug. Advice for Shrink round 2
+   (next): Memory's +51 is the byte-enable read-modify-write merge (yosys log shows how it
+   mapped); Processor's +74 is the store path; ALU 485 → ~250 remains the big prize per
+   the harness note.

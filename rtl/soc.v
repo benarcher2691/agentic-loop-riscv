@@ -13,8 +13,9 @@ module SOC #(
     wire clk, resetn;
     Clockworks #(.SLOW(SLOW)) clockworks (.CLK(CLK), .clk(clk), .resetn(resetn));
 
-    wire [31:0] mem_addr, mem_rdata;
+    wire [31:0] mem_addr, mem_rdata, mem_wdata;
     wire        mem_rstrb;
+    wire [3:0]  mem_wmask;
     wire [31:0] x1;
 
     Processor processor (
@@ -23,6 +24,8 @@ module SOC #(
         .mem_addr (mem_addr),
         .mem_rdata(mem_rdata),
         .mem_rstrb(mem_rstrb),
+        .mem_wdata(mem_wdata),
+        .mem_wmask(mem_wmask),
         .x1       (x1)
     );
 
@@ -30,7 +33,9 @@ module SOC #(
         .clk      (clk),
         .mem_addr (mem_addr),
         .mem_rdata(mem_rdata),
-        .mem_rstrb(mem_rstrb)
+        .mem_rstrb(mem_rstrb),
+        .mem_wdata(mem_wdata),
+        .mem_wmask(mem_wmask)
     );
 
     assign LEDS = x1[4:0];
