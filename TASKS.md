@@ -21,7 +21,7 @@ Architecture target, so no task requires rewriting an earlier one: `SOC` (clock,
 
 - [x] **Processor, part 2: all register-register and register-immediate instructions.** Wire `ALU` into EXECUTE: `isALUreg` uses `rs2`, `isALUimm` uses `Iimm`; shifts take the amount from bits [4:0] of the second operand; `funct7[5]` selects SUB/SRA only where the spec allows (SUB for register ADD only, SRA/SRAI for both). Extend `tb/processor_tb.v`: every ALU-reg and ALU-imm instruction at least once with hand-computed results, `SRAI` of a negative value, `SLTIU` with `-1` (unsigned compare), `SUB` producing a negative result, `SLLI` by 31.
 
-- [ ] **Jumps: JAL and JALR.** `rd <= PC + 4`; JAL: `PC <= PC + Jimm`; JALR: `PC <= (rs1 + Iimm) & ~1`. Bench: forward and backward JAL, JALR through a register, `rd = x0` (no link written), a two-iteration loop counted in a register, link register value checked against the hand-computed address.
+- [x] **Jumps: JAL and JALR.** `rd <= PC + 4`; JAL: `PC <= PC + Jimm`; JALR: `PC <= (rs1 + Iimm) & ~1`. Bench: forward and backward JAL, JALR through a register, `rd = x0` (no link written), a two-iteration loop counted in a register, link register value checked against the hand-computed address.
 
 - [ ] **Branches.** BEQ, BNE, BLT, BGE, BLTU, BGEU using the ALU's `EQ/LT/LTU`; `PC <= PC + Bimm` when taken. Bench: each branch taken *and* not taken; signed vs unsigned distinguished with `−1` vs `0xFFFFFFFF` operands; a countdown loop that sums 1..10 into a register (expect 55).
 

@@ -104,3 +104,19 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    squeeze the part, share one shift core before touching anything else. Advice for JAL/
    JALR: the wrEn/wrData path is ready for `rd <= PC+4`; add a PC-source mux in EXECUTE
    and remember rs1Val is already latched for JALR's target.
+- **Jumps: JAL and JALR** (task 9): iteration 9 had already put the jump path in
+   processor.v (doJump/jumpTarget, wrData = PC+4) and left a WIP bench that an auto-commit
+   captured; I replaced that bench with tb/jumps_tb.v (58 checks) — same acceptance
+   criteria plus `jumpTarget` wire checks and a per-cycle walk of the first JAL. Program:
+   forward JAL x0 over two poison words, a subroutine at addr 12 called twice by backward
+   JALs (x1 = 28/36) returning through JALR x0,x1,0, and a two-iteration loop whose JALR
+   return self-retargets (x7 seed 42, +4 per pass, return (x7-1)&~1 → 44 then 48 = EBREAK);
+   both JALR sums (45, 49) are odd so the &~1 masking is load-bearing. 4329 total, pnr
+   unchanged (979 LCs, 5 BRAMs, 52 MHz).
+   Surprises: (1) my hand encoding of jal x5,8 dropped the opcode byte (0x00800280 vs
+   0x008002EF) — third hand-encoding slip in a row, the lib cross-check caught it again;
+   (2) the old bench's comment claims an expWord loop "misbehaved" in iverilog — a
+   `for` loop calling a case-function works fine here, that note was about something else.
+   Advice for Branches (next): EQ/LT/LTU already leave the ALU instance; extend the
+   EXECUTE PC mux to `branch taken ? PC + Bimm` with taken = decoded per funct3 from
+   those wires, and keep isBranch OUT of wrEn (branches write no rd).
