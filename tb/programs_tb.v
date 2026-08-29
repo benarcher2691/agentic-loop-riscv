@@ -32,6 +32,12 @@
 //       addr 24: addi x12,x12,1
 //       addr 28: jal  x1,+20 -> f2  (x1=32)
 //
+//   P5  13-bit addressing: a program placed at byte 4096 (entered through a
+//       JAL trampoline at 0 — the old 10-bit PC path would wrap to 0) sums
+//       eight data words from the data area at 5120 (0x1400, built with
+//       LUI 4096 + ADDI 1024) into x3, stores the sum at 5152 and loads it
+//       back.  Data 100,200,...,800 -> sum 3600.
+//
 // Each run: reset (PC held 0), free-run until the fetch strobe has been quiet
 // 8 cycles (EBREAK halt), check PC frozen at the program's EBREAK address,
 // check mid-run state at unique PCs (proves call/return order), check final
@@ -39,7 +45,7 @@
 // against hand-encoded expWord constants (spec bit formulas).
 module programs_tb;
   `include "check.vh"
-  `WATCHDOG(200_000)
+  `WATCHDOG(400_000)
 
   reg clk = 0;
   reg resetn = 0;
@@ -47,16 +53,26 @@ module programs_tb;
 
   wire [31:0] mem_addr;
   wire        mem_rstrb;
+  wire [31:0] mem_wdata;
+  wire [3:0]  mem_wmask;
   wire [31:0] x1_out;   // not "x1": the assembler lib localparams x0..x31
 
   // Bench memory model, same contract as rtl/Memory: synchronous read of
-  // MEM[addr[9:2]] on the clock edge while the strobe is high.
-  reg [31:0] MEM [0:255];
+  // MEM[addr[12:2]] on the clock edge while the strobe is high (6 KB),
+  // synchronous byte-enabled writes (P5 stores through this path).
+  reg [31:0] MEM [0:1535];
   reg [31:0] mem_rdata;
-  always @(posedge clk) if (mem_rstrb) mem_rdata <= MEM[mem_addr[9:2]];
+  always @(posedge clk) begin
+    if (mem_rstrb)    mem_rdata <= MEM[mem_addr[12:2]];
+    if (mem_wmask[0]) MEM[mem_addr[12:2]][ 7: 0] <= mem_wdata[ 7: 0];
+    if (mem_wmask[1]) MEM[mem_addr[12:2]][15: 8] <= mem_wdata[15: 8];
+    if (mem_wmask[2]) MEM[mem_addr[12:2]][23:16] <= mem_wdata[23:16];
+    if (mem_wmask[3]) MEM[mem_addr[12:2]][31:24] <= mem_wdata[31:24];
+  end
 
   Processor dut (.clk(clk), .resetn(resetn), .mem_addr(mem_addr),
-                 .mem_rdata(mem_rdata), .mem_rstrb(mem_rstrb), .x1(x1_out));
+                 .mem_rdata(mem_rdata), .mem_rstrb(mem_rstrb),
+                 .mem_wdata(mem_wdata), .mem_wmask(mem_wmask), .x1(x1_out));
 
   `include "riscv_assembly.v"
 
@@ -71,6 +87,7 @@ module programs_tb;
   integer Ld  = 20;      // P3 subroutine
   integer Lf1 = 16;      // P4 outer subroutine
   integer Lf2 = 48;      // P4 inner subroutine
+  integer Lp5 = 4112;    // P5 loop head (program base 4096 + 16)
 
   integer i, w;
 
@@ -79,7 +96,7 @@ module programs_tb;
   task fillEbreak;
     integer j;
     begin
-      for (j = memPC >> 2; j < 256; j = j + 1) MEM[j] = 32'h00100073;
+      for (j = memPC >> 2; j < 1536; j = j + 1) MEM[j] = 32'h00100073;
     end
   endtask
 
@@ -196,6 +213,23 @@ module programs_tb;
             11: expWord = 32'h00008067;  // jalr x0,x1,0
             12: expWord = 32'h00A60613;  // addi x12,x12,10
             13: expWord = 32'h00008067;  // jalr x0,x1,0
+            default: expWord = 32'h00000013;
+          endcase
+        end
+        5: begin
+          case (k)
+            0:  expWord = 32'h00000193;  // addi x3,x0,0    (4096)
+            1:  expWord = 32'h00001237;  // lui  x4,0x1000  (4100) x4 = 4096
+            2:  expWord = 32'h40020213;  // addi x4,x4,1024 (4104) x4 = 5120
+            3:  expWord = 32'h00800313;  // addi x6,x0,8    (4108)
+            4:  expWord = 32'h00022283;  // lw   x5,0(x4)   (4112 = Lp5)
+            5:  expWord = 32'h005181B3;  // add  x3,x3,x5   (4116)
+            6:  expWord = 32'h00420213;  // addi x4,x4,4    (4120)
+            7:  expWord = 32'hFFF30313;  // addi x6,x6,-1   (4124)
+            8:  expWord = 32'hFE0318E3;  // bne  x6,x0,-16  (4128 -> 4112)
+            9:  expWord = 32'h00322023;  // sw   x3,0(x4)   (4132)
+            10: expWord = 32'h00022383;  // lw   x7,0(x4)   (4136)
+            11: expWord = 32'h00100073;  // ebreak          (4140)
             default: expWord = 32'h00000013;
           endcase
         end
@@ -327,6 +361,54 @@ module programs_tb;
     `CHECK_EQ(x1_out,               32'd12,  "x1 output mirrors RegisterBank[1]")
     for (w = 0; w < 14; w = w + 1)
       `CHECK_EQ(MEM[w], expWord(4, w), "P4 assembler word matches the hand encoding")
+
+    // ===== P5: program at 4096, data at 5120 (13-bit addressing) =====
+    // Trampoline at 0: the old 10-bit PC path would wrap 4096 & 0x3FF = 0
+    // and spin here forever, so reaching the program at all proves the
+    // 13-bit JAL target.
+    memPC = 0;
+    JAL(x0, 4096);        // x0 link (dropped), PC -> 4096
+    EBREAK();
+    endASM();
+    fillEbreak;           // words 2..1535 = EBREAK
+
+    memPC = 4096;
+    ADDI(x3, x0, 0);      // sum = 0
+    LUI(x4, 32'h00001000);  // x4 = 4096
+    ADDI(x4, x4, 1024);   // x4 = 5120 = data base (0x1400)
+    ADDI(x6, x0, 8);      // count = 8
+    Label(Lp5);
+    LW(x5, x4, 0);        // x5 = data[i]
+    ADD(x3, x3, x5);      // sum += data[i]
+    ADDI(x4, x4, 4);      // p++
+    ADDI(x6, x6, -1);     // count--
+    BNE(x6, x0, LabelRef(Lp5));
+    SW(x3, x4, 0);        // MEM[5152] = sum (x4 = 5120 + 32 here)
+    LW(x7, x4, 0);        // read the stored sum back
+    EBREAK();
+    endASM();
+    fillEbreak;           // words 1036..1535 = EBREAK
+
+    // Data area at 5120 (words 1280..1287), written after both EBREAK fills
+    // so neither can clobber it.
+    for (i = 0; i < 8; i = i + 1) MEM[1280 + i] = 100 * (i + 1);
+
+    startRun;
+    `CHECK_EQ(MEM[0], 32'h0000106F, "trampoline jal x0,+4096 matches the hand encoding")
+    // Loop head, first iteration: the prologue has committed.
+    pollPC(32'd4112);
+    `CHECK_EQ(dut.RegisterBank[4], 32'd5120, "x4 = data base 5120 (LUI+ADDI 13-bit constant)")
+    `CHECK_EQ(dut.RegisterBank[6], 32'd8,    "count = 8 at the first load")
+    `CHECK_EQ(dut.RegisterBank[3], 32'd0,    "sum still 0 at the first load")
+    finishHalt(32'd4140);
+    `CHECK_EQ(dut.RegisterBank[3], 32'd3600, "sum of 100..800 = 3600")
+    `CHECK_EQ(dut.RegisterBank[4], 32'd5152, "x4 = 5120 + 8*4 after the loop")
+    `CHECK_EQ(dut.RegisterBank[7], 32'd3600, "stored sum loaded back into x7")
+    `CHECK_EQ(MEM[1288], 32'd3600, "SW landed at byte 5152 = word 1288")
+    for (i = 0; i < 8; i = i + 1)
+      `CHECK_EQ(MEM[1280 + i], 100 * (i + 1), "data word intact after the run")
+    for (w = 0; w < 12; w = w + 1)
+      `CHECK_EQ(MEM[1024 + w], expWord(5, w), "P5 assembler word matches the hand encoding")
 
     `DONE
   end
