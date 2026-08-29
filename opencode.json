@@ -20,6 +20,8 @@
       "make prog": "deny",
       "make uart": "deny",
       "make hwtest": "deny",
+      "make hwcheck": "deny",
+      "python3 tools/hw.py*": "deny",
       "python3 tools/hwtest.py*": "deny",
       "iceprog*": "deny",
       "python3 tools/uart.py*": "deny",

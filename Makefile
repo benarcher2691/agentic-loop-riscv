@@ -4,6 +4,7 @@
 #   make prog    flash build/SOC.bin to the iCEstick (human only)
 #   make uart    read the board's UART on FTDI channel B (human only)
 #   make hwtest  flash + expect the banner on the UART: PASS/FAIL (human only)
+#   make hwcheck run build/hwprogs-* through the monitor on real hardware: HWCHECKS pass/fail
 TOP      ?= SOC
 DEVICE   ?= hx1k
 PACKAGE  ?= tq144
@@ -16,7 +17,7 @@ TBS      := $(sort $(wildcard tb/*_tb.v))
 SIMOK    := $(patsubst tb/%_tb.v,$(BUILD)/%.simok,$(TBS))
 IVFLAGS  := -g2012 -Wall -Wno-timescale -DBENCH -DFAST_SIM -I tb -I lib -I rtl   # FAST_SIM: short delays; BENCH: assembler self-checks
 
-.PHONY: check sim lint synth pnr equiv stat prog uart hwtest clean
+.PHONY: check sim lint synth pnr equiv stat prog uart hwtest hwcheck clean
 
 check: sim lint synth pnr equiv stat
 	@echo "CHECK: OK"
@@ -81,6 +82,10 @@ prog: $(BUILD)/$(TOP).bin
 	iceprog $<
 uart:
 	python3 tools/uart.py
+hwcheck: $(BUILD)/$(TOP).bin sim   ## flash if changed, drive the monitor over UART, run build/hwprogs-*, compare (human only)
+	@python3 tools/hw.py id >/dev/null 2>&1 || $(MAKE) -s prog
+	python3 tools/hw.py check
+
 hwtest: $(BUILD)/$(TOP).bin   ## flash and expect the UART banner (human only)
 	python3 tools/hwtest.py $<
 
