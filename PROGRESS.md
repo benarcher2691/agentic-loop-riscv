@@ -10,30 +10,6 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
 
    module to include into.
 
-- **Stack + UART byte primitives** (phase 3, task 1): resident program rewritten — sp = x2 = 0x1800
-   (one past the 6 KB top, growing down), banner now goes one word per char through PUTBYTE
-   (LW not LB — see below), then MAIN calls ECHO2 forever. ECHO2 is the non-leaf demo: push ra,
-   GETBYTE, PUTBYTE(byte), PUTBYTE(byte+1), pop ra, RET. GETBYTE/PUTBYTE are leaves (no push).
-   Benches: new tb/monitor_io_tb.v ('A'→'A','B'; sentinel 'Z'→'Z','[' proves ra survived the
-   nested return; pushed word MEM[1535]=0x17FC holds link 44; sp parked at 0x17FC and ra=60 in
-   the GETBYTE poll idle state; edge bytes 0x00/0x7F/0xFF — 0xFF's echo+1 wraps to 0x00 for real);
-   soc_tb reconciled (banner + echo behaviour, LEDS dark throughout, LED walk gone); memory_tb
-   follows the new ROM. 10700 → 14766 checks; unflattened 1148/1150, pnr 1150/1280 (exactly at
-   budget), Fmax 39.59 MHz, equiv clean, 16 BRAM.
-   Surprises/advice for the monitor task (next): (1) The prior session's headroom idea is a
-   MEASURED dead end — the x1 mirror is 32 FFs but 361 total FFs pack into the 1150 LCs next to
-   the 1148 LUT4s (only ~2 FF-only LCs exist), so removing it frees ~0 pnr LCs and 0 LUT4, and
-   4 benches CHECK x1_out. Don't re-derive. (2) Both budget metrics pass but with 2/0 spare;
-   yosys+nextpnr are deterministic for fixed RTL, so the tree is stable until you edit logic —
-   the LEDS-read arm at 0x400004 (~5-8 LUT4) WILL need an offset found as part of that task
-   (measure with a scratch yosys ablation before editing). (3) The ROM deliberately sticks to
-   LW/SW/ADDI/ANDI/BNE/JAL/JALR/LUI (no LB/BEQ) so the flattened netlist prunes the byte-lane
-   load logic and branch mux — keep new monitor code to that set. (4) ROM layout: WBYTE=20,
-   MAIN=40, ECHO2=48, GETBYTE=84, GBDONE=100, PUTBYTE=108 (bytes), message at byte 128, 44 words;
-   the deterministic idle state is PC 84..100 with sp=0x17FC/ra=60 — benches poll for that PC
-   range before hierarchical checks. (5) The echo2 bench task needs fork/join: the first echo's
-   start edge lands mid-stop of the incoming frame, a sequential recv misses it.
-
 - **Monitor command protocol** (phase 3, task 2): ECHO2 replaced by the command loop
    (V/W/R/G/unknown). Key trick: GET32/PUT32 assemble/disassemble words through an 8-byte
    stack frame (ra at sp+4, scratch word at sp+0) using SB/LBU — no shifter, no OR needed,
@@ -130,7 +106,7 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    Fmax 38.45 → 34.63 MHz, still 2.9× margin. 15635 → 15823 checks in 19 benches (badaddr_tb
    = 188), equiv clean. Also in this commit: another round of file rotation (hwprogs entry →
    TASKS-done, two old PROGRESS entries → PROGRESS-archive).
-   Advice for T3 (exact-match IO decode, next): (1) the misalign term deliberately ignores
+   Advice    for T3 (exact-match IO decode, next): (1) the misalign term deliberately ignores
    bit 22 — IO-space misaligned accesses halt via misalign (badaddr cases 12/18), while
    unmapped ALIGNED IO offsets are T3's job; (2) the SOC's LED-word read is currently the
    ioRdata *default* arm — exact-match decode replaces that default with 32'd0, so the edit
@@ -139,4 +115,32 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    model (poison fill + canaries + X/vanish semantics matching rtl/Memory) is a good template
    for fault-injection benches; (4) `tRun`'s reset-preserves-registers trick lets one bench
    cover many permanent-halt cases without re-elaboration.
+
+- **T3: exact-match IO decode** (phase 5, T3): `rtl/soc.v` decodes the four IO words by
+   equality on `mem_addr[5:2]`; read default is now `32'd0` (LEDS read is an explicit
+   `ioLeds` arm); `storeNow` wire deleted. **The load-bearing contract decision: the UART
+   data port (0x400008) accepts FULL-WORD stores only (`mem_wmask == 4'b1111`)** — the
+   audit calls the monitor's ≥5-byte W at 0x400004 "walking into the UART" a bug, and
+   T4(b) pins `W 0x400008 1 <byte>` as must-NOT-transmit, while PUTBYTE sends with SW —
+   byte-lane gating alone cannot satisfy all three. T4 should bench-pin this (iowalk_tb
+   already does) rather than re-litigate the RTL. Bench tricks worth reusing: (1) to get
+   `rxAvail` pending across arbitrary CPU instructions WITHOUT the CPU polling RX (a poll
+   read consumes the byte), time the RX byte to complete inside the TX-busy window of two
+   back-to-back frames (~174 µs) — the CPU polls the side-effect-free status word instead;
+   (2) event-driven TXD recorder (log frames on negedge, flag strays past a threshold,
+   bounded wait on `txdN` before checking) cannot miss a start bit and cannot hang, unlike
+   a `recv_byte` that arms after the frame started; (3) the lib's `endASM` $finishes with
+   "Missing label initialization" unless label integers are pre-initialized with their
+   byte addresses (`integer S1 = 36, S2 = 52;`); (4) the monitor banner is 12 frames —
+   wait `txdN == 12` before sending commands. My hand LUI constant was wrong once again
+   (imm20 0x00400 → 0x004002B7, not 0x400002B7) — the EXP cross-check caught it pre-sim.
+   Budgets: unflattened 1158 → 1165 (SOC 57 → 65, +7 for the four 4-bit comparators and
+   the fourth read-mux arm), pnr 1163 → 1175, Fmax 33.20 MHz. 15823 → 15874 checks in
+   21 benches (ioexact_tb 47, iowalk_tb 4), equiv clean.
+   Advice for T4 (UART contracts, next): mostly bench/comment work — (a) RX overrun
+   last-writer-wins and the set-vs-clear race via bus forcing (uart_rx_tb technique);
+   document the policy at the `rxAvail` block; (b) the M4 kill is ALREADY in (wmask==1111
+   gate) — add the monitor `W 0x400008 1 <byte>` mid-PUTBYTE bench; (c) comment fixes:
+   `rtl/soc.v` uartValid hold rationale (A12) and the stale SRLI claim in `tb/io_tb.v`
+   (A16). Headroom: 15 LUT4 unflattened, 105 pnr LCs.
 

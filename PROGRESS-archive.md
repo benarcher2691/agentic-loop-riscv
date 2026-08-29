@@ -550,3 +550,27 @@
   > All sims pass (14766 checks). Now the budget test:
   > `make check` is green — but pnr landed at **exactly** 1150/1150. That's too fragile: PROGRESS.md notes abc run-to-run noise of ±5 LUT4, so a re-run could tip it red. Let me find real headroom. First candidate: the `x1` mirror output (32 FFs) — is it used anywhere?
 
+- **Stack + UART byte primitives** (phase 3, task 1): resident program rewritten — sp = x2 = 0x1800
+   (one past the 6 KB top, growing down), banner now goes one word per char through PUTBYTE
+   (LW not LB — see below), then MAIN calls ECHO2 forever. ECHO2 is the non-leaf demo: push ra,
+   GETBYTE, PUTBYTE(byte), PUTBYTE(byte+1), pop ra, RET. GETBYTE/PUTBYTE are leaves (no push).
+   Benches: new tb/monitor_io_tb.v ('A'→'A','B'; sentinel 'Z'→'Z','[' proves ra survived the
+   nested return; pushed word MEM[1535]=0x17FC holds link 44; sp parked at 0x17FC and ra=60 in
+   the GETBYTE poll idle state; edge bytes 0x00/0x7F/0xFF — 0xFF's echo+1 wraps to 0x00 for real);
+   soc_tb reconciled (banner + echo behaviour, LEDS dark throughout, LED walk gone); memory_tb
+   follows the new ROM. 10700 → 14766 checks; unflattened 1148/1150, pnr 1150/1280 (exactly at
+   budget), Fmax 39.59 MHz, equiv clean, 16 BRAM.
+   Surprises/advice for the monitor task (next): (1) The prior session's headroom idea is a
+   MEASURED dead end — the x1 mirror is 32 FFs but 361 total FFs pack into the 1150 LCs next to
+   the 1148 LUT4s (only ~2 FF-only LCs exist), so removing it frees ~0 pnr LCs and 0 LUT4, and
+   4 benches CHECK x1_out. Don't re-derive. (2) Both budget metrics pass but with 2/0 spare;
+   yosys+nextpnr are deterministic for fixed RTL, so the tree is stable until you edit logic —
+   the LEDS-read arm at 0x400004 (~5-8 LUT4) WILL need an offset found as part of that task
+   (measure with a scratch yosys ablation before editing). (3) The ROM deliberately sticks to
+   LW/SW/ADDI/ANDI/BNE/JAL/JALR/LUI (no LB/BEQ) so the flattened netlist prunes the byte-lane
+   load logic and branch mux — keep new monitor code to that set. (4) ROM layout: WBYTE=20,
+   MAIN=40, ECHO2=48, GETBYTE=84, GBDONE=100, PUTBYTE=108 (bytes), message at byte 128, 44 words;
+   the deterministic idle state is PC 84..100 with sp=0x17FC/ra=60 — benches poll for that PC
+   range before hierarchical checks. (5) The echo2 bench task needs fork/join: the first echo's
+   start edge lands mid-stop of the incoming frame, a sequential recv misses it.
+

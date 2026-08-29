@@ -1,13 +1,9 @@
 `default_nettype none
 // Top level for the iCEstick. Port names must match boards/icestick.pcf.
 // Processor + Memory run at full CLK speed (SLOW = 0 passes CLK through).
-// Address bit 22 selects IO space instead of RAM (word offsets):
-//   bit 2 -> LEDS word: a write updates ledReg from mem_wdata[4:0] on the
-//            low byte lane only (mem_wmask[0]); reads return
-//            {27'd0, ledReg} (so the monitor's R command can read it back),
-//   bit 3 -> UART data write, bit 4 -> UART status read (bit 9 of the
-//   returned word = transmitter busy), bit 5 -> UART RX read:
-//   {23'd0, avail, data}, avail (bit 8) clears on the read.
+// Address bit 22 selects IO space instead of RAM; the four IO words decode
+// by exact equality on the word offset mem_addr[5:2] (see below). Any other
+// IO offset reads as 0 with no side effect and drops writes.
 module SOC #(
     parameter SLOW = 0    // 0 = CPU at full CLK speed; >0 divides CLK by 2^SLOW
 ) (
@@ -25,18 +21,29 @@ module SOC #(
 
     // ---- IO space decode -------------------------------------------------
     // mem_addr[22] is only ever set by a load/store (the fetch address is a
-    // 13-bit PC, zero-extended). A store pulse is |mem_wmask, which the
-    // Processor gates to the store's EXECUTE cycle — exactly one clk edge
-    // per store, with mem_addr = the effective address.
+    // 13-bit PC, zero-extended). The four IO words decode by EXACT equality
+    // on the word offset mem_addr[5:2]:
+    //   0001 -> LEDS  0x400004: a write updates ledReg from mem_wdata[4:0]
+    //            on the low byte lane only (mem_wmask[0]); reads return
+    //            {27'd0, ledReg} (so the monitor's R command can read it back)
+    //   0010 -> UART data write 0x400008, full-word stores only
+    //            (mem_wmask == 4'b1111): the monitor's byte-wise W command
+    //            must be able to walk across IO words without firing the
+    //            transmitter, and PUTBYTE sends with SW
+    //   0100 -> UART status read 0x400010, bit 9 of the word = transmitter busy
+    //   1000 -> UART RX read 0x400020: {23'd0, avail, data}, avail clears
+    // Any other IO offset: reads return 32'd0 with no side effect (rxAvail
+    // survives), writes are dropped.
+    // A store pulse is |mem_wmask, which the Processor gates to the store's
+    // EXECUTE cycle — exactly one clk edge per store, with mem_addr = the
+    // effective address.
     wire ioSel    = mem_addr[22];
-    wire storeNow = |mem_wmask;
-    // LED write: gate on the low byte lane (mem_wmask[0]) so a multi-byte
-    // write (e.g. the monitor's byte-wise W of a whole word) updates ledReg
-    // only from the byte carrying the value, not from the high zero bytes.
-    wire ioLedsW  = ioSel & mem_addr[2] & mem_wmask[0];
-    wire ioUartW  = ioSel & storeNow & mem_addr[3];
-    wire ioUartS  = ioSel & mem_addr[4];
-    wire ioUartRx = ioSel & mem_addr[5];
+    wire [3:0] ioWord = mem_addr[5:2];
+    wire ioLeds   = ioSel & (ioWord == 4'b0001);              // read + write
+    wire ioLedsW  = ioLeds & mem_wmask[0];
+    wire ioUartW  = ioSel & (ioWord == 4'b0010) & (mem_wmask == 4'b1111);
+    wire ioUartS  = ioSel & (ioWord == 4'b0100);
+    wire ioUartRx = ioSel & (ioWord == 4'b1000);
     wire uartReady;   // emitter handshake (declared early: used below)
     wire uartTx;
 
@@ -89,9 +96,8 @@ module SOC #(
     // Read return path: the RAM's synchronous read, or the IO status word.
     // ioSelR registers the fact that the strobe in flight targeted IO (the
     // combinational ioSel is gone by the LOAD wait state, when the
-    // Processor actually consumes mem_rdata). The final else arm is the
-    // LEDS word (word offset 1, mem_addr[2]) — the only remaining IO read
-    // address; reads of unused IO words also return it, which nothing does.
+    // Processor actually consumes mem_rdata). Exact-match decode: RX word,
+    // status word, LEDS word — anything else reads as 0 with no side effect.
     reg        ioSelR = 1'b0;
     reg [31:0] ioRdata = 32'd0;
     always @(posedge clk) begin
@@ -99,7 +105,8 @@ module SOC #(
         if (mem_rstrb & ioSel)
             ioRdata <= ioUartRx ? {23'd0, rxAvail, uartRxData}
                                 : ioUartS ? {22'd0, ~uartReady, 9'd0}
-                                          : {27'd0, ledReg};
+                                : ioLeds  ? {27'd0, ledReg}
+                                : 32'd0;
     end
     assign mem_rdata = ioSelR ? ioRdata : memRamRdata;
 
