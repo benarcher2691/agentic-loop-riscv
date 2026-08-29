@@ -136,3 +136,18 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    (`isLUI ? Uimm : isAUIPC ? PC + Uimm : …`) and put isLUI|isAUIPC into wrEn — same shape
    as the jump path. Resource warning: 87% of the part is used; if the next tasks squeeze,
    share the ALU's three barrel shifters first (task-8 note) before touching anything else.
+- **LUI and AUIPC** (task 11): processor.v — `wrEn |= isLUI|isAUIPC`, `wrData` gains two
+   arms (`isLUI ? Uimm : isAUIPC ? PC+Uimm : aluOut`); PC still holds the instruction's
+   own address during EXECUTE, so no extra latch needed. New tb/lui_auipc_tb.v (39 checks):
+   wire walks of the first LUI (wrData = Uimm, NOT the ALU's rs1+Iimm garbage) and first
+   AUIPC, LUI bit-31, LUI+ADDI = 0x12345678, AUIPC with bit-31 Uimm, same-Uimm-at-two-PCs
+   (x9−x7 = 8 = PC difference), LUI to x0 dropped, 8-word lib cross-check. Also flipped
+   processor_tb's stale "LUI still a NOP" regression to expect 0x12345000. 4455 total,
+   LCs 1121 → 1182 (92%), Fmax 47 MHz.
+   Surprises: three more MY-side constant slips in one session, all caught before touching
+   RTL: (1) rd=7/rd=9 U-encodings 0x13B7/0x14B7 vs correct 0x1397/0x1497 (7<<7=0x380,
+   9<<7=0x480 — I keep mis-hexing rd<<7); (2) 12 + 0x1000 = 0x100C, not 0x101C. Advice:
+   write expected values as *expressions* (32'd12 + 32'h1000) where possible — the walk
+   checks written that way passed first try while the literal ones failed. Resource alarm:
+   92% of the part; the program-suite task is bench-only, but Loads/Stores will add logic —
+   share the ALU's three barrel shifters (task-8 note) BEFORE loads/stores if pnr squeezes.

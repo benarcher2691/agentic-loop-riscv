@@ -25,7 +25,7 @@ Architecture target, so no task requires rewriting an earlier one: `SOC` (clock,
 
 - [x] **Branches.** BEQ, BNE, BLT, BGE, BLTU, BGEU using the ALU's `EQ/LT/LTU`; `PC <= PC + Bimm` when taken. Bench: each branch taken *and* not taken; signed vs unsigned distinguished with `−1` vs `0xFFFFFFFF` operands; a countdown loop that sums 1..10 into a register (expect 55).
 
-- [ ] **LUI and AUIPC.** `LUI: rd <= Uimm`; `AUIPC: rd <= PC + Uimm`. Bench: LUI with bit 31 set, LUI + ADDI building a full 32-bit constant, AUIPC at two different PCs checked against hand-computed values.
+- [x] **LUI and AUIPC.** `LUI: rd <= Uimm`; `AUIPC: rd <= PC + Uimm`. Bench: LUI with bit 31 set, LUI + ADDI building a full 32-bit constant, AUIPC at two different PCs checked against hand-computed values.
 
 - [ ] **Program suite.** `tb/programs_tb.v`: complete programs with hand-verifiable results — fibonacci(10) = 55 by loop; gcd(48, 18) = 6 by subtraction loop; a subroutine using `CALL`/`RET` (ra/x1) called twice with different arguments in `a0`; nested calls that save/restore ra via `ADDI sp` + (for now) registers, since loads/stores do not exist yet. Each program ends with EBREAK; results checked in registers. No RTL change expected unless a bug surfaces — if so, fix it and add a regression check.
 

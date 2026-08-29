@@ -57,7 +57,7 @@ module processor_tb;
   //   22: ANDI (x22, x1,    6)  x22 = 4
   //   23: ADDI (x23, x0,   33)  x23 = 33
   //   24: SRL  (x24, x1,  x23)  x24 = 5>>(33&31) = 5>>1 = 2
-  //   25: LUI  (x25, 0x12345)   still a NOP in part 2: x25 stays 0
+  //   25: LUI  (x25, 0x12345)   x25 = 0x12345000 (LUI since the U-type task)
   //   26: EBREAK()              halt, PC frozen at 104
   `include "riscv_assembly.v"
   initial begin
@@ -198,7 +198,7 @@ module processor_tb;
     `CHECK_EQ(dut.RegisterBank[22], 32'd4,          "ANDI: 5&6 = 4")
     `CHECK_EQ(dut.RegisterBank[23], 32'd33,         "x23 = 33 (shift amount source)")
     `CHECK_EQ(dut.RegisterBank[24], 32'd2,          "SRL amount 33: uses bits[4:0] = 1")
-    `CHECK_EQ(dut.RegisterBank[25], 32'd0,          "LUI still a NOP in part 2")
+    `CHECK_EQ(dut.RegisterBank[25], 32'h12345000,     "LUI writes Uimm: x25 = 0x12345000")
     `CHECK_EQ(x1_out, 32'd5, "x1 output mirrors RegisterBank[1]")
 
     // The assembler macros produced exactly the hand-assembled words.

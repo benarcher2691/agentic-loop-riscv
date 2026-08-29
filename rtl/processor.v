@@ -10,9 +10,9 @@
 //                rs1Val, rs2Val are latched on the edge leaving this state.
 //   EXECUTE      the ALU (combinational on the latched operands) writes back
 //                and PC <= PC + 4. JAL/JALR write the link PC + 4 and set
-//                PC to their target instead. Branches/loads/stores/LUI/AUIPC
-//                are still NOPs that advance PC. isSYSTEM (EBREAK) halts:
-//                state and PC stay put.
+//                PC to their target instead. LUI writes Uimm, AUIPC writes
+//                PC + Uimm. Branches/loads/stores are still NOPs that
+//                advance PC. isSYSTEM (EBREAK) halts: state and PC stay put.
 //
 // x0 always reads 0 (read mux; writes to rd 0 are dropped). The x1 output
 // mirrors RegisterBank[1] through a register written on the same edge with
@@ -94,8 +94,14 @@ module Processor (
         .LTU      (aluLTU)
     );
 
-    wire        wrEn   = useAlu | doJump;
-    wire [31:0] wrData = doJump ? (PC + 32'd4) : aluOut;
+    wire        wrEn   = useAlu | doJump | isLUI | isAUIPC;
+    // LUI writes the immediate itself; AUIPC writes PC + Uimm (PC still
+    // holds this instruction's address during EXECUTE). Jumps write the
+    // link address PC + 4; everything else comes from the ALU.
+    wire [31:0] wrData = doJump  ? (PC + 32'd4) :
+                          isLUI   ? Uimm :
+                          isAUIPC ? (PC + Uimm) :
+                                    aluOut;
 
     // Branch condition: funct3 selects among the ALU's EQ/LT/LTU and their
     // complements (BGE/BNE/BGEU). Branches write no rd — isBranch stays out
