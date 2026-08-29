@@ -347,3 +347,47 @@
    clocks ≈ 1.2 ms. Ready for the human: `make prog` then `make uart` shows the banner once,
    LEDs walk at 4 Hz.
 
+- **Hardware fix: hold reset until the block RAM is ready** (task 19): Clockworks gained
+   `parameter RESET_CYCLES` — 65536 default (hardware: iCE40 BRAM unreadable for several µs
+   after config; 65536 cycles = 5.46 ms at 12 MHz), 16 under `ifdef FAST_SIM` so every bench
+   keeps its timing. Counter width is `$clog2(RESET_CYCLES)+1`, sticks at its terminal value
+   via the old MSB-tap (`resetn = por[MSB]`) — so RESET_CYCLES must be a power of two (all
+   uses are: 16/64/65536); a general compare would cost ~8 LUT4 for nothing. Benches: +65 in
+   clockworks_tb (RESET_CYCLES=64 instance: low through posedge 63, high after 64, stays high),
+   +3 in processor_tb (`state == FETCH_INSTR` during reset, PC=0 was already checked), +15 in
+   soc_tb (explicit `resetn` low + LEDS dark per cycle). 4814 → 4897 checks. Numbers:
+   Clockworks 6 → 18 LUT4 unflattened (17-bit counter), total 1031 → 1043 (budget 1150),
+   pnr 981 → 986 LCs, Fmax 43.35 → 45.54 MHz, equiv 0 mismatches.
+   Surprises: (1) the Makefile's equiv target passes `-DFAST_SIM` to yosys (line 60) — that is
+   what keeps the netlist and the RTL sim in agreement at 16 cycles; synth/pnr/lint compile
+   without it, so only the bitstream sees 65536. Do not "simplify" that flag away. (2) soc_tb's
+   old "16 dark cycles" loop sampled *after* the 16th posedge, where resetn is already high —
+   the LEDS-only checks masked it because LEDS stays dark one cycle longer; the resetn-low
+   check caught it immediately. Sampled-cycle vs counter-cycle off-by-one is the trap here
+   (clockworks_tb's original 15+1 structure already encodes it). All tasks in TASKS.md are
+   now checked — the design is ready for the human to run `make prog` / `make uart`.
+
+- **UART receiver** (task 20, phase 2): `rtl/uart_rx.v` — 4-state FSM (IDLE/START/DATA/STOP),
+   two-flop sync + falling-edge detect, mid-start sample rejects false starts, bits sampled
+   every BIT_CLKS=104 from mid-start, `valid` pulses one clock at mid-stop. SOC: `rxAvail`
+   reg (set-priority over the read-clear so a byte completing on the read cycle survives),
+   IO word `0x400020` = `{23'd0, avail, data}` in the ioRdata mux. uart_rx_tb (27 checks,
+   4924 total): idle silence, single byte with a mid-stop timing window (valid at 9.5 bit
+   periods + 1..4 clocks after the start edge — distinguishes mid-bit from frame-end
+   sampling), back-to-back bytes, byte after ~34-bit idle, 20-clock glitch ignored + FSM
+   recovery, per-pulse one-clock-width check, pulse-count total; SOC section checks
+   rxAvail/`{avail,data}` word/read-clears-avail. Numbers: 1043 → 1082 LUT4 unflattened
+   (UartRx 37, SOC 50 → 52), pnr 986 → 1064 LCs (83%), Fmax 45.54 → 40.31 MHz, equiv clean.
+   Surprises: (1) `valid` fires at mid-stop, ~4.3 µs BEFORE `send_byte` returns — a task
+   that starts polling afterwards always misses the one-clock pulse (first run's 2 FAILs);
+   fixed with a capture monitor (records data/timestamp of every pulse, checks the width
+   inline) that `wait_valid` consumes from a queue. (2) The SOC read path is tested by
+   hijacking the bus: `force soc.mem_rstrb/mem_addr` for exactly one cycle, release, sample
+   `mem_rdata` the next edge (ioSelR routes the registered ioRdata) — works fine in
+   iverilog; the running demo program shrugs it off (RX word 0x41 decodes as an illegal
+   opcode = NOP; picked test bytes for exactly that). (3) Bench clock is 83.334 ns (1 ps
+   rounding) vs the nominal 83.3333 — 0.17 clocks/bit drift, absorbed by the timing window.
+   Advice for Echo (next): the RX word is a plain LW from 0x400020, avail test = ANDI 256
+   (lib SRLI is buggy, task-17 note); copy uart_rx_tb's `send_soc` transmitter model into
+   soc_tb for the "hi" round-trip; LEDS = byte & 31 after the walk. 68 LUT4 headroom left.
+
