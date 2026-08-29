@@ -13,8 +13,18 @@
 //   EXECUTE      the ALU (combinational on the latched operands) writes back
 //                and PC <= PC + 4. JAL/JALR write the link PC + 4 and set
 //                PC to their target instead. LUI writes Uimm, AUIPC writes
-//                PC + Uimm. Branches/loads/stores are still NOPs that
-//                advance PC. isSYSTEM (EBREAK) halts: state and PC stay put.
+//                PC + Uimm. A load instead asserts the read strobe with the
+//                effective address rs1 + Iimm (computed by the ALU's ADD —
+//                its funct3 input is forced to 000 for loads) and moves on.
+//                isSYSTEM (EBREAK) halts: state and PC stay put.
+//   LOAD         wait state: the synchronous memory has latched the loaded
+//                word into mem_rdata (the strobe is low again, so it holds).
+//                The byte/halfword lane comes from the effective address's
+//                low bits, latched into ldOff leaving EXECUTE; width and
+//                sign/zero extension come from ldFunct3. The decoder cannot
+//                be used here — mem_rdata now holds load DATA, not the
+//                instruction — so ldActive/ldRd were latched earlier. rd is
+//                written, PC <= PC + 4.
 //
 // x0 always reads 0 (read mux; writes to rd 0 are dropped). The x1 output
 // mirrors RegisterBank[1] through a register written on the same edge with
@@ -30,11 +40,19 @@ module Processor (
 );
     localparam [1:0] FETCH_INSTR = 2'd0,
                      FETCH_REGS  = 2'd1,
-                     EXECUTE     = 2'd2;
+                     EXECUTE     = 2'd2,
+                     LOAD        = 2'd3;
 
     reg [1:0]  state = FETCH_INSTR;
     reg [31:0] PC    = 32'd0;
     reg [31:0] rs1Val, rs2Val;
+
+    // Load bookkeeping, latched while the decoder still sees the instruction
+    // (mem_rdata is clobbered by the load data during the LOAD state).
+    reg        ldActive;   // instruction in flight is a load
+    reg [2:0]  ldFunct3;   // width / signedness selector
+    reg [4:0]  ldRd;       // destination register
+    reg [1:0]  ldOff;      // byte lane within the word, from the eff. address
 
     reg [31:0] RegisterBank [0:31];
     integer i;
@@ -81,10 +99,15 @@ module Processor (
 
     wire [31:0] aluOut;
     wire        aluEQ, aluLT, aluLTU;   // EQ/LT/LTU: used by branches later
+    // Loads reuse the ALU's adder as the effective-address adder: forcing
+    // funct3 to 000 (with aluF75 already 0 for loads) makes aluOut the
+    // rs1 + Iimm address. EQ/LT/LTU do not depend on funct3, so branches
+    // are unaffected.
+    wire [2:0]  aluFunct3 = isLoad ? 3'b000 : funct3;
     ALU alu (
         .in1      (rs1Val),
         .in2      (aluIn2),
-        .funct3   (funct3),
+        .funct3   (aluFunct3),
         .funct7_5 (aluF75),
         .out      (aluOut),
         .EQ       (aluEQ),
@@ -96,18 +119,77 @@ module Processor (
     // and the branch target — the three classes are mutually exclusive, so
     // a mux in front of the adder picks the immediate. JALR reuses the
     // ALU's ADD (its funct3 is 000 and aluIn2 is Iimm) and clears bit 0.
+    // The adder stays 32-bit because AUIPC writes the full PC + Uimm to
+    // rd; JAL/branch targets only use the low 10 bits (1 KB memory).
     wire [31:0] pcImm      = isJAL ? Jimm : isAUIPC ? Uimm : Bimm;
     wire [31:0] pcPlusImm  = PC + pcImm;
     wire [31:0] jumpTarget = isJAL ? pcPlusImm : (aluOut & ~32'h00000001);
 
+    // Sequential PC arithmetic is 10-bit: the memory is 1 KB, so only
+    // PC[9:0] is ever architecturally visible (PC is stored 32-bit with
+    // high zeros — the benches read it as a 32-bit value). This keeps the
+    // +4 adder and the next-PC mux at 10 bits; the JAL/JALR link (also
+    // PC + 4) shares the same 10-bit sum, zero-extended.
+    wire [9:0] pc10    = PC[9:0];
+    wire [9:0] pcPlus4 = pc10 + 10'd4;
+
     wire        wrEn   = useAlu | doJump | isLUI | isAUIPC;
+    // Byte/halfword selection of the loaded word. The lane comes from
+    // ldOff (latched effective address bits [1:0]), the width from
+    // ldFunct3: 000 LB, 001 LH, 010 LW, 100 LBU, 101 LHU. ldByte is the
+    // addressed byte, ldHiByte its neighbour above (only needed for
+    // halfword loads, which are required only at offsets 0/2). The result
+    // is built directly inside the wrData mux below so the load arms share
+    // the writeback mux tree instead of adding a second one.
+    wire ldState = (state == LOAD);
+    // The addressed halfword (loads are only required at even offsets, so
+    // no byte swap is needed) and the addressed byte. ldHiByte is just the
+    // upper half of half — pure wiring.
+    wire [15:0] half     = ldOff[1] ? mem_rdata[31:16] : mem_rdata[15:0];
+    wire [7:0]  ldByte   = ldOff[1] ? (ldOff[0] ? mem_rdata[31:24]
+                                                : mem_rdata[23:16])
+                                    : (ldOff[0] ? mem_rdata[15:8]
+                                                : mem_rdata[7:0]);
+    wire [7:0]  ldHiByte = half[15:8];
+    // Width / sign-extension of the loaded word: 000 LB, 001 LH, 010 LW,
+    // 100 LBU, 101 LHU. Built as one parallel mux so the writeback tree
+    // stays shallow.
+    reg [31:0] ldExt;
+    always @(*) begin
+      case (ldFunct3)
+        3'b000:  ldExt = {{24{ldByte[7]}},  ldByte};            // LB
+        3'b001:  ldExt = {{16{ldHiByte[7]}}, half};             // LH
+        3'b100:  ldExt = {24'b0, ldByte};                       // LBU
+        3'b101:  ldExt = {16'b0, half};                         // LHU
+        default: ldExt = mem_rdata;                             // LW
+      endcase
+    end
     // LUI writes the immediate itself; AUIPC writes PC + Uimm (PC still
     // holds this instruction's address during EXECUTE). Jumps write the
-    // link address PC + 4; everything else comes from the ALU.
-    wire [31:0] wrData = doJump  ? (PC + 32'd4) :
+    // link address PC + 4; a load in the LOAD state writes its extended
+    // data; everything else comes from the ALU. The load arms live inside
+    // this one mux so the writeback tree is shared. The ldState arm MUST
+    // come first: during LOAD mem_rdata holds load data, not an
+    // instruction, so the decoder outputs (doJump/isLUI/isAUIPC) are
+    // garbage — a loaded 0xDEADBEEF decodes as JAL and would otherwise
+    // write back PC + 4 instead of the data.
+    wire [31:0] wrData = ldState ? ldExt :
+                         doJump  ? {22'b0, pcPlus4} :
                          isLUI   ? Uimm :
                          isAUIPC ? pcPlusImm :
                                    aluOut;
+    // One register-file write port for both writeback states: the decoder
+    // is only valid in EXECUTE, the latched load bookkeeping in LOAD.
+    wire        doWrite = ldState ? ldActive : wrEn;
+    wire [4:0]  wrReg   = ldState ? ldRd     : rdId;
+
+    // During EXECUTE of a load the memory port reads the data address
+    // instead of the PC; the LOAD state drops the strobe so mem_rdata
+    // keeps holding the loaded word. Only the low 10 address bits reach
+    // the memory (1 KB), so the fetch/load mux is 10-bit, not 32.
+    wire loadRead   = isLoad & (state == EXECUTE);
+    assign mem_addr  = loadRead ? {22'b0, aluOut[9:0]} : {22'b0, pc10};
+    assign mem_rstrb = (state == FETCH_INSTR) | loadRead;
 
     // Branch condition: funct3 selects among the ALU's EQ/LT/LTU and their
     // complements (BGE/BNE/BGEU). Branches write no rd — isBranch stays out
@@ -128,9 +210,6 @@ module Processor (
     // Bench-visible aliases of the shared adder's result (pure wiring).
     wire [31:0] branchTarget = pcPlusImm;
 
-    assign mem_addr  = PC;
-    assign mem_rstrb = (state == FETCH_INSTR);
-
     always @(posedge clk) begin
         if (!resetn) begin
             state <= FETCH_INSTR;
@@ -148,21 +227,44 @@ module Processor (
                     // only ever read as 0.
                     rs1Val <= RegisterBank[rs1Id];
                     rs2Val <= RegisterBank[rs2Id];
-                    state  <= EXECUTE;
+                    // Load bookkeeping: the decoder is still valid here,
+                    // but mem_rdata will hold load data during LOAD.
+                    ldActive <= isLoad;
+                    ldFunct3 <= funct3;
+                    ldRd     <= rdId;
+                    state    <= EXECUTE;
                 end
                 EXECUTE: begin
                     if (isSYSTEM) begin
                         // EBREAK: halt — state and PC stay put.
+                    end else if (isLoad) begin
+                        // Read strobe and data address are already driven
+                        // combinationally; remember the byte lane and wait
+                        // one cycle for the synchronous memory.
+                        ldOff <= aluOut[1:0];
+                        state <= LOAD;
                     end else begin
-                        if (wrEn && rdId != 5'd0)
-                            RegisterBank[rdId] <= wrData;
-                        if (wrEn && rdId == 5'd1)
+                        if (doWrite && wrReg != 5'd0)
+                            RegisterBank[wrReg] <= wrData;
+                        if (doWrite && wrReg == 5'd1)
                             x1 <= wrData;      // mirror of RegisterBank[1]
-                        PC    <= doJump    ? jumpTarget :
-                                 doBranch  ? pcPlusImm :
-                                             (PC + 32'd4);
+                        PC    <= doJump    ? {22'b0, jumpTarget[9:0]} :
+                                 doBranch  ? {22'b0, pcPlusImm[9:0]} :
+                                             {22'b0, pcPlus4};
                         state <= FETCH_INSTR;
                     end
+                end
+                LOAD: begin
+                    // Write back the extended load data (lane/width from the
+                    // latched bookkeeping — the decoder sees data now) via
+                    // the shared write port, then resume fetching. PC still
+                    // holds this instruction's own address.
+                    if (doWrite && wrReg != 5'd0)
+                        RegisterBank[wrReg] <= wrData;
+                    if (doWrite && wrReg == 5'd1)
+                        x1 <= wrData;      // mirror of RegisterBank[1]
+                    PC    <= {22'b0, pcPlus4};
+                    state <= FETCH_INSTR;
                 end
                 default: state <= FETCH_INSTR;
             endcase

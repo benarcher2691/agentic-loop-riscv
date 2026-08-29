@@ -189,3 +189,28 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    load/store logic (~250 cells) lands on the unflattened number, so the margin is ~22
    LUT4; if it goes red, share further inside the ALU (e.g. fold the XOR arm into the
    subtractor path) before touching module boundaries.
+- **Loads** (task 14): landed the previous session's WIP (4-cycle load: EXECUTE drives the
+   read strobe with the ALU-computed address rs1+Iimm, LOAD wait state writes the extended
+   data; lane/width/rd latched in FETCH_REGS because mem_rdata holds load *data* during
+   LOAD). Memory itself unchanged — MEM[addr[9:2]] was already byte-addressable; lane
+   select + sign/zero extension live in the Processor. Budget was red (1073 > 900), so the
+   session became a shrink pass: **1073 → 885 unflattened** (Processor 565 → 377, ALU 485
+   and Decoder 17 unchanged), pnr 84 LCs / 3 BRAM / 106.9 MHz, checks 4545 → 4612
+   (+67 loads_tb: all 5 load types × all offsets, sign bits set/clear, DATAW/DATAB,
+   negative offset, x0/x1 loads, LOAD-state cycle walk, 23-word hand-encoding cross-check).
+   What paid: (1) 10-bit PC arithmetic — PC is stored 32-bit (benches read it) but only
+   [9:0] is architectural (1 KB memory), so the +4 adder, the next-PC mux, the JAL/JALR
+   link arm and the mem_addr fetch/load mux all shrank to 10 bits (−158 LUT4); AUIPC's
+   pcPlusImm adder stays 32-bit because AUIPC writes the full PC+Uimm to rd. (2) ldExt as
+   one parallel `case (ldFunct3)` with `half = ldOff[1] ? mem[31:16] : mem[15:0]` and
+   ldHiByte = half[15:8] as wiring (−30). Surprises: (1) mid-session the harness raised
+   LC_BUDGET 900 → 1150 (eb0be53) and scheduled a "Shrink round 2" after Stores — the
+   shrink still landed at 885, leaving ~265 headroom for stores. (2) Dead ends, measured
+   or worked: folding ADD into the shared subtractor via an isADD-complemented input is a
+   wash (SB_CARRY needs the complemented bit as a raw input → +32 LUT4 cancels −32);
+   routing JAL's link through the ALU needs 32-bit in1/in2 muxes (+64) vs the −30 adder.
+   Advice for Stores (next): Memory gains mem_wdata/mem_wmask[3:0]; the store path is
+   cheaper than loads (no sign extension — just a lane shifter/mask from addr[1:0] and
+   funct3), and mem_addr is already 10-bit; keep the store data on rs2Val (already
+   latched). Watch the unflattened total after the change; round-2 shrink (ALU ~490 →
+   ~250 per the harness note) comes only after Stores.
