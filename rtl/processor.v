@@ -201,11 +201,13 @@ module Processor (
     // keeps holding the loaded word. During EXECUTE of a store the same
     // address mux carries the store target; the write is committed by the
     // memory on the edge that leaves EXECUTE, so stores need no wait
-    // state. Only the low 10 address bits reach the memory (1 KB), so the
-    // fetch/load/store mux is 10-bit, not 32.
+    // state. The fetch side only needs the 10-bit PC, but loads/stores
+    // present the full effective address up to bit 22: the SOC decodes
+    // address bit 22 as IO space (SOC gates the RAM off for those
+    // cycles), so the load/store half of the mux is 23 bits wide.
     wire loadRead   = isLoad & (state == EXECUTE);
     wire storeWrite = isStore & (state == EXECUTE);
-    assign mem_addr  = (loadRead | storeWrite) ? {22'b0, aluOut[9:0]}
+    assign mem_addr  = (loadRead | storeWrite) ? {9'b0, aluOut[22:0]}
                                                : {22'b0, pc10};
     assign mem_rstrb = (state == FETCH_INSTR) | loadRead;
 

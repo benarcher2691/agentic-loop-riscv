@@ -1,10 +1,13 @@
 `timescale 1ns/1ps
 `default_nettype none
-// SOC smoke test: Processor + Memory run the small ADDI program from the ROM;
-// LEDS show x1[4:0]. The program walks x1 through 1,3,7,15,31 — one ADDI
-// every 3 CPU cycles — and halts on EBREAK with PC frozen at 20. The ROM
-// words are duplicated here hand-assembled; the cross-check against
-// dut.memory.MEM catches the assembler output and the copy drifting apart.
+// SOC smoke test: Processor + Memory run the small ADDI program from the ROM.
+// LEDS are driven by the IO write register (address bit 22 space) since the
+// memory-mapped IO task — the ADDI program never touches IO, so LEDS stay
+// dark; the x1 walk it used to display is still checked via RegisterBank.
+// The program walks x1 through 1,3,7,15,31 — one ADDI every 3 CPU cycles —
+// and halts on EBREAK with PC frozen at 20. The ROM words are duplicated
+// here hand-assembled; the cross-check against dut.memory.MEM catches the
+// assembler output and the copy drifting apart.
 module soc_tb;
   `include "check.vh"
   `WATCHDOG(1_000_000)
@@ -29,18 +32,13 @@ module soc_tb;
     EXP[5] = 32'h00100073;  // ebreak
   end
 
-  // LEDS after each of the first 15 post-reset edges: x1 changes on the edge
-  // that completes each ADDI (FETCH_INSTR, FETCH_REGS, EXECUTE = 3 edges).
+  // LEDS after each of the first 15 post-reset edges: the LED register only
+  // moves on an IO write, and this program makes none — LEDS stay dark.
   reg [4:0] EXP_LEDS [0:14];
   integer i;
 
   initial begin
-    EXP_LEDS[0]  = 5'd0;  EXP_LEDS[1]  = 5'd0;
-    EXP_LEDS[2]  = 5'd1;  EXP_LEDS[3]  = 5'd1;  EXP_LEDS[4]  = 5'd1;
-    EXP_LEDS[5]  = 5'd3;  EXP_LEDS[6]  = 5'd3;  EXP_LEDS[7]  = 5'd3;
-    EXP_LEDS[8]  = 5'd7;  EXP_LEDS[9]  = 5'd7;  EXP_LEDS[10] = 5'd7;
-    EXP_LEDS[11] = 5'd15; EXP_LEDS[12] = 5'd15; EXP_LEDS[13] = 5'd15;
-    EXP_LEDS[14] = 5'd31;
+    for (i = 0; i < 15; i = i + 1) EXP_LEDS[i] = 5'd0;
 
     `CHECK_EQ(TXD, 1'b1, "TXD idles high")
 
@@ -52,10 +50,10 @@ module soc_tb;
     `CHECK_EQ(dut.clockworks.resetn, 1'b1, "reset released after 16 cycles")
     `CHECK_EQ(dut.processor.PC, 32'd0, "PC starts at 0")
 
-    // Program run: one ADDI every 3 edges, LEDS = x1[4:0].
+    // Program run: one ADDI every 3 edges, LEDS dark (no IO writes yet).
     for (i = 0; i < 15; i = i + 1) begin
       @(posedge CLK); #1;
-      `CHECK_EQ(LEDS, EXP_LEDS[i], "LEDS walk 0,1,3,7,15,31, one ADDI every 3 edges")
+      `CHECK_EQ(LEDS, EXP_LEDS[i], "LEDS stay dark: no IO write in this program")
     end
     `CHECK_EQ(dut.processor.PC, 32'd20, "PC at the EBREAK after the five ADDIs")
     `CHECK_EQ(dut.processor.RegisterBank[1], 32'd31, "x1 = 1+2+4+8+16 = 31")
@@ -63,7 +61,7 @@ module soc_tb;
     // EBREAK halts: LEDS and PC frozen.
     repeat (10) begin
       @(posedge CLK); #1;
-      `CHECK_EQ(LEDS, 5'd31, "LEDS frozen after EBREAK")
+      `CHECK_EQ(LEDS, 5'd0, "LEDS frozen after EBREAK")
       `CHECK_EQ(dut.processor.PC, 32'd20, "PC frozen after EBREAK")
     end
 

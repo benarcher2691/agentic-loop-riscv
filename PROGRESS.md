@@ -289,3 +289,34 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    muxes, and `mem_addr` is already 10-bit — IO space sits above bit 22 so the RAM decode
    is unchanged.
 
+- **Memory-mapped IO** (task 17): SOC decodes `mem_addr[22]` as IO space — bit 2 → LEDS
+   write reg, bit 3 → UART data write, bit 4 → status read (bit 9 = busy = ~o_ready);
+   `corescore_emitter_uart` at 12 MHz/115200. RAM read strobe and write mask are gated off
+   while ioSel, so IO addresses cannot alias into MEM[addr[9:2]]. Processor's load/store
+   mem_addr half widened 10 → 23 bits (`{9'b0, aluOut[22:0]}`; fetch side still pc10) —
+   bit 22 never left the chip before this. The read mux uses a REGISTERED ioSelR: during
+   the LOAD wait state mem_addr is back at the PC, so the combinational decode is gone
+   exactly when the Processor consumes mem_rdata. io_tb (62 checks, 4755 total): program
+   writes 5'b10101 to LEDS (on the SOC port), sends "OK\n" waiting on busy; bench has a
+   mid-bit 115200-baud receiver (nominal 8680.6 ns/bit) checking the 3 bytes + stop bits;
+   19-word lib-vs-hand cross-check; RAM-intact and halt checks. Numbers: 941 → 1031
+   unflattened (emitter 27, SOC 50, Processor 382→395), pnr 981 LCs / 6 BRAM / 42.48 MHz.
+   Surprises: (1) the emitter's `data` reg has NO power-on value → in RTL sim `|data` is X
+   forever and o_ready never resolves (hardware FFs power up 0, so it only bites sim);
+   io_tb kicks `dut.uart.data = 0` at t=0, and SOC gates TXD with a sticky txStarted reg
+   (`TXD = uartTx | ~txStarted`) so the X never escapes — this also keeps equiv green
+   (X|1 = 1 on both sides). (2) The emitter swallows a single-cycle i_valid pulse that
+   lands on its internal shift edge (~1 in 106) — SOC HOLDS i_valid until o_ready drops
+   instead of pulsing. (3) The emitter's real bit period is 106 clocks (12e6/106 ≈ 113.2
+   kbaud, 1.7% slow — the counter wraps 0→255 before the shift), mid-bit sampling at the
+   nominal rate still has 0.35-bit margin on the last data bit. (4) The lib's SRLI macro
+   is BUGGY — encodes `srl rd,rs1,x(shamt)` (funct7 0, shamt as rs2); SLLI is accidentally
+   right, SRAI correct. Used ANDI(x13,x13,512) for the busy-bit test. (5) Lib LUI takes
+   the FINAL value — LUI(x5,32'h00400000), not 0x400 (misread the task-7 note, one wasted
+   sim round; the EXP cross-check caught it). Advice for the demo program (next): all IO
+   infrastructure is done and proven — ROM program needs LUI base 0x400000, SW to
+   0x400004 (LEDS) / 0x400008 (UART data), LW 0x400010 + ANDI 0x200 busy-wait (copy the
+   io_tb pattern; remember the lib SRLI/LUI quirks). 119 LUT4 headroom, no shrink needed.
+   Note: equiv only exercises the ROM program (LEDS/TXD ports), IO logic is covered by
+   io_tb alone; soc_tb's LEDS expectations are now "dark" (same 62-check count).
+
