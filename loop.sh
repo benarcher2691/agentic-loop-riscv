@@ -93,9 +93,10 @@ handoff_note() {   # $1 = session title, $2 = iteration, $3 = status
   (( HANDOFF )) || return 0
   command -v sqlite3 >/dev/null && [[ -f "$DB" ]] || return 0
   local txt
-  txt=$(sqlite3 "$DB" "select json_extract(p.data,'\$.text') from part p join session s on s.id = p.session_id
-        where s.title = '$1' and json_extract(p.data,'\$.type') = 'text' order by p.time_created desc limit 1;" 2>/dev/null | head -c 6000)
-  (( ${#txt} >= 200 )) || return 0
+  # last three text turns, oldest first: a killed session rarely ends on its summary
+  txt=$(sqlite3 "$DB" "select json_extract(p.data,'\$.text') from (select p.data, p.time_created from part p join session s on s.id = p.session_id
+        where s.title = '$1' and json_extract(p.data,'\$.type') = 'text' order by p.time_created desc limit 3) p order by p.time_created;" 2>/dev/null | head -c 6000)
+  if (( ${#txt} < 200 )); then log "iteration $2: no substantial last message to hand off (${#txt} chars)"; return 0; fi
   {
     printf '\n- **Handoff captured by loop.sh — iteration %s ended without ticking its task (tree: %s). The session'"'"'s last message, verbatim:**\n\n' "$2" "$3"
     printf '%s\n' "$txt" | sed 's/^/  > /'
