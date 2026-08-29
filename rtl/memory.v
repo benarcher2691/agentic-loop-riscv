@@ -15,21 +15,22 @@ module Memory (
     reg [31:0] MEM [0:1535];
 
     // ROM program: the hardware demo. Prints "Loop RISC-V\n" over the UART
-    // (byte loads from the message at word 30, busy-wait on the status word
+    // (byte loads from the message at word 32, busy-wait on the status word
     // between bytes), then walks a 1 across LEDS exactly once (1,2,4,8,16 —
     // the walk's shift-and-mask wraps the pattern to 0, which ends the loop),
     // then echoes UART input forever: poll the RX word (0x400020), when the
     // avail bit (8) is set write the byte back to the UART data register
-    // (busy-wait on status bit 9) and show byte & 31 on the LEDs. The delay
-    // constant is shrunk under `ifdef FAST_SIM so simulations stay fast; on
-    // hardware it is 500000 iterations x 6 cycles = 3.0M cycles = 0.25 s per
-    // step at 12 MHz. tb/soc_tb.v and tb/memory_tb.v keep independent copies
-    // of these words.
+    // (busy-wait on status bit 9) and show byte & 31 on the LEDs. Each walk
+    // step waits on the RDCYCLE counter: read cycle (CSR 0xC00) once, then
+    // loop until the 32-bit-wrap-safe difference now-start reaches DELAY
+    // (3 000 000 on hardware = 0.25 s at 12 MHz; a small value under `ifdef
+    // FAST_SIM so simulations stay fast). tb/soc_tb.v and tb/memory_tb.v
+    // keep independent copies of these words.
     `include "../lib/riscv_assembly.v"
-    integer WBYTE = 12, WBUSY = 20, LSTEP = 48, WDELAY = 60, ECHO = 80, EBUSY = 96;
+    integer WBYTE = 12, WBUSY = 20, LSTEP = 48, WDELAY = 64, ECHO = 88, EBUSY = 104;
     initial begin
         LUI(x5, 32'h00400000);   // x5 = 0x400000 IO base
-        ADDI(x6, x0, 120);       // x6 = &message (byte 120 = word 30)
+        ADDI(x6, x0, 128);       // x6 = &message (byte 128 = word 32)
         ADDI(x7, x0, 12);        // 12 banner bytes
         Label(WBYTE);
         LB(x10, x6, 0);          // x10 = *p
@@ -44,16 +45,18 @@ module Memory (
         ADDI(x9, x0, 1);         // LED pattern = 1
         Label(LSTEP);
         SW(x9, x5, 4);           // LEDS <- pattern
+        CSRRS(x14, 12'hC00, x0); // x14 = cycle: start of this step's delay
 `ifdef FAST_SIM
-        ADDI(x14, x0, 2);        // ~30 cycles per step in simulation
-        ADDI(x14, x14, 0);
+        ADDI(x16, x0, 300);      // DELAY = 300 cycles per step in simulation
+        ADDI(x16, x16, 0);
 `else
-        LUI(x14, 32'h0007A000);  // 500000 = 0x7A120 ...
-        ADDI(x14, x14, 32'h120); // ... x 6 cycles = 0.25 s per step at 12 MHz
+        LUI(x16, 32'h002DC);     // 3000000 = 0x2DC6C0 ...
+        ADDI(x16, x16, 32'h6C0); // ... cycles = 0.25 s per step at 12 MHz
 `endif
         Label(WDELAY);
-        ADDI(x14, x14, -1);
-        BNE(x14, x0, LabelRef(WDELAY));
+        CSRRS(x15, 12'hC00, x0); // x15 = cycle now
+        SUB(x15, x15, x14);      // x15 = now - start: the difference is
+        BLTU(x15, x16, LabelRef(WDELAY)); // wrap-safe; loop while it < DELAY
         ADD(x9, x9, x9);         // pattern <<= 1
         ANDI(x9, x9, 31);        // keep 5 bits
         BNE(x9, x0, LabelRef(LSTEP));  // 5 steps (1,2,4,8,16); 32&31 = 0 ends it

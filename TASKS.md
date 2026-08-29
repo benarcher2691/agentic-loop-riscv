@@ -11,25 +11,33 @@ Architecture target, so no task requires rewriting an earlier one: `SOC` (clock,
 
 Same rules. The SoC currently has 1 KB RAM, UART transmit only, and no way to read time.
 
-
-
-- [x] **Shrink the core, round 3 — the ALU.** *(Outcome: 485 → 434 LUT4, total 1,031; the ≤ 320 target was shown unreachable without changing the ALU's compare interface — see the glm-5.3 session's note in PROGRESS.md. Accepted as done by the supervisor.)* `make stat` reports `ALU: 485 LUT4`; a resource-shared RV32I ALU on iCE40 is ~250. Bring **`ALU` to ≤ 320 LUT4 and the unflattened total to ≤ 980** with no functional change — `tb/alu_tb.v` (2,438 checks against a behavioural reference), every other bench and `equiv` are the regression and must pass unchanged. The previous session measured where the cells are (its note is in `PROGRESS.md`): shifter + the two `flip32` reversals ≈ 244, logic ops 94, subtractor/compares 92, ADD 52. Approaches, try in order and keep what `make stat` proves: (1) one shifter, no reversal muxes in the *data* path: compute `shRight` once from `in1` (or its reversal) and put the SLL reversal on the *output* only, so the shifter input mux disappears; or implement all three shifts as one 5-stage log shifter written explicitly (five `always @(*)` stages of 2:1 muxes, direction by conditional reversal at stage 0 only). (2) Merge the ADD and SUB into the single 33-bit adder (`in1 + (funct7_5 ? ~in2 : in2) + funct7_5`) and take EQ/LT/LTU from *that* result — one adder in the whole ALU instead of two. (3) Fold XOR/OR/AND into one `case` after the adder, and make the final `out` mux a single `case (funct3)` with no nested ternaries — abc maps nested ternaries badly. Record per-step before/after numbers in `PROGRESS.md`. Do not touch `Processor` or `Memory` in this task.
-
 - [x] **6 KB of RAM.** *(Done at 16 BRAMs, not the estimated 14 — the regfile floor is 4, not 2: RAM4K's widest mode is 256×16, so each 32-bit sync read port needs 2 blocks and 2 read ports + 1 write need 2 copies. 12 (MEM) + 4 = 16 fits the part exactly; see PROGRESS.md.)* `Memory`: 1536 words (6 KB). The hx1k has sixteen 4 Kbit block RAMs: the register file uses 2 and 6 KB needs 12, so 14 of 16. `Processor`: PC arithmetic and the fetch/load/store address path grow from 10 to 13 bits (`PC[12:0]`); everything about IO decode (bit 22) is unchanged. Benches: `tb/memory_tb.v` reads/writes words above 1 KB and at the last word; `tb/programs_tb.v` gets one program placed at address 4096 (assembled with `memPC` moved) and a data area at 5120; `make stat` reports 14 BRAMs and stays under the LUT budget (the wider adders cost some).
 
 - [x] **Cycle counter, part 1: the counter and its CSR read (built 64-bit — see below).** *(Done 2026-08-29 by an Opus 4.8 investigation, verified independently. Decision D2 (docs/decisions.md) REVERSED D1: the counter is the RISC-V-spec 64-bit RDCYCLE/RDCYCLEH after the ALU was refactored to a single shared add/sub, which freed enough logic — final 1139/1280 cells, 141 free, all 10363 checks + gate-level equiv green.)*
 
-- [ ] **Cycle counter, part 2: real-time delays in the demo.** Replace the counted delay loop in the resident program with `RDCYCLE`-based waiting: read the counter, then loop until it has advanced by `DELAY` cycles (3 000 000 on hardware = 0.25 s; a small value under `` `ifdef FAST_SIM ``). Handle the 32-bit wrap by comparing the *difference*. Bench: `tb/soc_tb.v` checks the LED period equals `DELAY` (± 3 instructions) using the bench's own cycle count.
+- [x] **Cycle counter, part 2: real-time delays in the demo.** *(Done 2026-08-29. Per-step loop: `CSRRS` start → `CSRRS`/`SUB`/`BLTU` diff loop (9 cycles/iter); DELAY 300 sim / 3 000 000 hw. Period model `9·ceil(DELAY/9)+21` is exact — measured 327 on all 4 steps; wrap exercised by a bench deposit of 0xFFFFFF00, cycleh 0→1 checked.)* Replace the counted delay loop in the resident program with `RDCYCLE`-based waiting: read the counter, then loop until it has advanced by `DELAY` cycles (3 000 000 on hardware = 0.25 s; a small value under `` `ifdef FAST_SIM ``). Handle the 32-bit wrap by comparing the *difference*. Bench: `tb/soc_tb.v` checks the LED period equals `DELAY` (± 3 instructions) using the bench's own cycle count.
 
 # Phase 3 — hardware in the loop
 
 
 
+
+
+
+
 The board becomes a test fixture the loop can drive over the UART. The monitor and the test programs
+
+
 
 are built and proven in simulation by the loop (the serial models in the benches already speak both
 
+
+
 directions); the host-side tool and `make hwcheck` are supervisor work (they need the board to test).
+
+
+
+
 
 
 
@@ -41,17 +49,37 @@ directions); the host-side tool and `make hwcheck` are supervisor work (they nee
 
 
 
+
+
+
+
 Idea, not yet a task: a fixed webcam over the board as a verifier for outputs that have no register to
+
+
 
 read back (OLED, LED matrix, VGA). Capture a frame (`imagesnap`/`ffmpeg` — one extra tool), then either
 
+
+
 pixel-compare fixed regions against an image rendered by the simulation (deterministic, alignment-
+
+
 
 sensitive) or hand the frame to a vision-capable model with a yes/no question (robust, fuzzy). For the
 
+
+
 five LEDs the UART monitor (phase 3) is the better sensor; revisit this when the first visual peripheral
 
+
+
 lands. Not a `- [ ]` item on purpose — the loop must not pick it up.
+
+
+
+
+
+
 
 
 
