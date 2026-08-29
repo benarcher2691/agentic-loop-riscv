@@ -10,12 +10,6 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
 
    module to include into.
 
-- **Handoff captured by loop.sh — iteration 1 ended without ticking its task (tree: TIMEOUT). The session's last message, verbatim:**
-
-  > Hard numbers: Processor +109 LUT4 and **+62 SB_CARRY** — the 64-bit ripple counter's carry chain is the real cost. Let me see what pnr does with it:
-  > pnr is 1203/1280 — fits the part but over the Makefile's 1150 line, and the unflattened count is 1217. The naive 4-arm writeback mux is the first thing to fix: during a CSR read the ALU output is provably 0 (`SLT(0, negative Iimm)`), so the CSR value can be **OR-ed** into the existing tree instead of added as a fourth arm — one LUT/bit instead of two mux levels. Let me restructure:
-  > The OR-trick got Processor to 439 (+36) and the unflattened total to **1144 — under budget**. But sim now fails on the read values. Let me see the full failure list:
-
 - **Handoff captured by loop.sh — iteration 2 ended without ticking its task (tree: TIMEOUT). The session's last message, verbatim:**
 
   > Odd — same command gives Processor 492 in scratch vs 530 in `make stat`. Let me check if yosys/abc is non-deterministic run-to-run:
@@ -104,3 +98,43 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    with sp=0x1800/ra=48 — poll that range before hierarchical checks. The exchange helper
    needs fork/join (a reply's start bit can land mid-stop of the last command byte).
 
+- **Handoff captured by loop.sh — iteration 4 ended without ticking its task (tree: green). The session's last message, verbatim:**
+
+  > "Read AGENTS.md and follow its workflow for exactly ONE task.
+  > 
+  > Steps:
+  > 1. `make check` — if red, fix first.
+  > 2. Open TASKS.md. Take the first `- [ ]` task. Read PROGRESS.md for notes from earlier sessions.
+  > 3. **Act, do not plan.** Right after reading the task, your very next tool call creates the bench file with its first two or three checks and a `make sim` run. Do not design the whole task in your head first; grow the bench and the RTL in small steps, running `make sim` after each (it takes seconds). Think in files, not in thoughts.
+  > 4. Keep going until `make check` is green. Read build/*.log on failure.
+  > 5. Tick the task in TASKS.md, append to PROGRESS.md, commit.
+  > 6. Stop.
+  > 
+  > If every task in TASKS.md is already checked, reply with the single line
+  > `ALL TASKS DONE` and do nothing else."
+  > `make check` is green (15059 checks, pnr fits). First unchecked task: **Exportable hardware test programs** (`tb/hwprogs_tb.v`). Let me read PROGRESS.md and the existing monitor bench to reuse its models.
+  > Now let me check the Makefile and check.vh to understand bench integration.
+
+
+- **Exportable hardware test programs** (phase 3, task 3): bench-only, as advised — budget untouched
+   (1149/1150). `tb/hwprogs_tb.v` assembles 4 programs (alu/ldst/fibgcd/jumpbr) into one shared `MEM`
+   sequentially (memPC reset between), uploads each at 0x400 with W, runs with G, reads the 0x800
+   result block (signature 0x600D0000|idx + results) with R, checks every word against independent
+   expectations (Verilog ops for alu/jumpbr, byte-lane slicing of a fixed pattern for ldst, reference
+   loops pinned to hand constants 610/21/6 for fibgcd). Exports build/hwprogs-<name>.prog.hex /
+   .expect.hex — $system is NOT available in this iverilog, so per the task's fallback the files land
+   directly in build/; iverilog's $writememh writes `// 0xNNNNNNNN` address comments every 16 words,
+   the host tool must skip them. Surprises/advice: (1) lib store operand order is ASSEMBLY order —
+   SW/SB/SH(data, base, imm), loads LW(rd, base, imm); (2) label discovery: gate the UART sequence on
+   the lib's ASMerror, else the bench executes garbage-offset code, G never returns, and the sim
+   burns the whole watchdog (>120 s wall); (3) for data addresses inside a relocated program use
+   AUIPC(x,0) + ADDI(x, x, LabelRef(L) + 4) — LabelRef is relative to the ADDI's own address — and
+   NEVER feed LI a label-dependent value (its 1-vs-2-word expansion differs between the X-label
+   discovery run and the final run, shifting every later label); (4) the jumpbr tests use a uniform
+   literal-offset pattern (BR +12 skips the not-taken marker, JAL x0,+8 skips the taken marker) so
+   the whole program needs zero labels, and B-type encodings are checked via a 6-word "probe"
+   assembly (never uploaded) at fixed MEM[0..5]; (5) odd-offset LH/LHU read the LOW half and SH
+   writes lanes {addr[1], addr[1]+1} (lane from addr[1] only) — now pinned by the exported ldst
+   program too; (6) my BLT hand constant was wrong once (branch offset is from the branch's own
+   address, not the label's) — the three-way check caught it. 15059 → 15635 checks in 18 benches;
+   pnr 1136/1280, 37.72 MHz, equiv clean.
