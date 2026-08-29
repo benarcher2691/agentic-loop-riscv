@@ -1,10 +1,18 @@
 `default_nettype none
-// Purely combinational RV32I ALU, resource-shared for the hx1k (434 LUT4):
-//   * one 33-bit subtractor (aluMinus) produces SUB, EQ, LT and LTU; ADD is
-//     the only other adder. EQ/LT/LTU compare in1 vs in2 on EVERY vector
-//     (tb/alu_tb.v checks them for all funct3/funct7_5 combinations), so the
-//     always-on compare subtractor can never be merged into the ADD/SUB
-//     adder — two adders are a hard floor.
+// Purely combinational RV32I ALU, resource-shared for the hx1k (375 LUT4):
+//   * ONE 33-bit add/sub unit (aluSum) produces ADD, SUB, EQ, LT and LTU.
+//     The operand-2 side is conditionally inverted and a carry-in of 1 is
+//     added when subtracting, so the same carry chain gives in1+in2 (ADD)
+//     and in1-in2 (SUB/compare). This replaces the previous two-adder floor
+//     (a separate always-on compare subtractor next to the ADD adder): the
+//     compare outputs EQ/LT/LTU are defined ONLY while the unit subtracts.
+//     It subtracts for SUB (funct3 000 & funct7_5), SLT (010), SLTU (011),
+//     and whenever `cmp` is asserted by the caller (branch compares — the
+//     Processor drives cmp=isBranch, because a branch's funct3 does not by
+//     itself select subtraction). For ADD/loads/stores/AUIPC/LUI (cmp=0,
+//     funct3 000, funct7_5 0) the unit adds and EQ/LT/LTU are don't-care —
+//     no consumer reads them there. SLT/SLTU reuse LT/LTU so the compare and
+//     the set-less-than result can never disagree.
 //   * one LEFT-shifter produces SLL directly; SRL/SRA feed the bit-reversed
 //     operand through the same shifter and reverse the result (flip32 is
 //     pure wiring, no cells). The reversal mux is selected by funct3[2]:
@@ -15,8 +23,6 @@
 //     bit is simply the sign in1[31] gated by funct7_5 (SRA).
 //   * the output mux is split on funct3[2] into two full 4-arm cases on
 //     funct3[1:0] (no defaults, no nested ternaries) plus one final 2:1.
-//     abc maps this ~50 LUT4 better than a single 8-arm case (funct3),
-//     which leaves the three logic ops at ~1 LUT4 per bit.
 //   funct3 000: ADD (funct7_5=0) / SUB (funct7_5=1)
 //   funct3 001: SLL          101: SRL (funct7_5=0) / SRA (funct7_5=1)
 //   funct3 010: SLT          011: SLTU
@@ -28,6 +34,7 @@ module ALU (
   input  wire [31:0] in2,
   input  wire [2:0]  funct3,
   input  wire        funct7_5,
+  input  wire        cmp,        // caller forces subtract to validate compare
   output reg  [31:0] out,
   output wire        EQ,
   output wire        LT,
@@ -45,16 +52,21 @@ module ALU (
 
   wire [4:0] sh = in2[4:0];
 
-  // Shared subtraction: {1'b0,in1} - {1'b0,in2} = in1 - in2 in 33 bits.
-  // Bit 32 is the unsigned borrow (in1 < in2); the low word is in1 - in2.
-  wire [32:0] aluMinus = {1'b0, in1} - {1'b0, in2};
-  assign EQ  = (aluMinus[31:0] == 32'd0);
-  assign LTU = aluMinus[32];
+  // One shared add/sub. Subtract for SUB, SLT, SLTU and branch compares
+  // (cmp). doSub inverts operand 2 and injects a carry-in of 1, so the
+  // single 33-bit carry chain computes in1-in2; otherwise it computes
+  // in1+in2. Bit 32 is then the borrow: 1 exactly when in1 < in2, so it is
+  // the unsigned "less than" directly.
+  wire        doSub  = (funct3 == 3'b000 & funct7_5)
+                     | (funct3 == 3'b010) | (funct3 == 3'b011) | cmp;
+  wire [32:0] opB    = doSub ? ~{1'b0, in2} : {1'b0, in2};
+  wire [32:0] aluSum = {1'b0, in1} + opB + {32'b0, doSub};
+  wire [31:0] addSub = aluSum[31:0];             // ADD or SUB result
+  assign EQ  = (aluSum[31:0] == 32'd0);          // valid while subtracting
+  assign LTU = aluSum[32];                       // borrow == in1 < in2
   // Signs equal: signed order == unsigned order. Signs differ: in1 < in2
   // exactly when in1 is the negative one.
-  assign LT  = (in1[31] ^ in2[31]) ? in1[31] : aluMinus[32];
-  wire [31:0] addOut = in1 + in2;
-  wire [31:0] addSub = funct7_5 ? aluMinus[31:0] : addOut;
+  assign LT  = (in1[31] ^ in2[31]) ? in1[31] : aluSum[32];
 
   // Shared shifter: five log-shift stages of 2:1 muxes, shifting LEFT by
   // sh[k] at stage k, fill bits entering from the bottom. SLL shifts in1

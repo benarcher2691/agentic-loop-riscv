@@ -6,6 +6,37 @@ it blindly, and knows exactly what would change the answer.
 
 ---
 
+## D2 — Cycle counter is now the RISC-V-standard 64-bit; D1 reversed (2026-08-29)
+
+**Decision.** Implement `RDCYCLE`/`RDCYCLEH` as a true 64-bit free-running counter
+(`{cycleh, cycles}` +1 every clk; 0xC00 reads the low word, 0xC80 the high word). This
+reverses D1. Both budget guards still pass at `LC_BUDGET=1150`: **1141 unflattened / 1139
+flattened**, ~141 logic cells free (> the ~100 the phase-3 UART monitor needs), Fmax ~35 MHz.
+
+**Why it now fits (D1's blocker removed).** D1 was right that a 64-bit counter cannot fit
+*on top of the old ALU*. The fix was the ALU, not the counter. The old ALU carried a hard
+"two-adder floor": it exposed EQ/LT/LTU from an always-on 33-bit compare subtractor that
+`tb/alu_tb.v` checked on *every* vector, so it could never merge with the ADD adder — 434 LUT4.
+That floor was an artifact of *where* the compare was tested, not a real requirement: the
+compare outputs are only ever consumed when the ALU subtracts (SUB, SLT/SLTU, and branches).
+Merging ADD and SUB/compare into **one** add/sub unit (operand-2 invert + carry-in, compare
+valid only while subtracting; branches assert a new `cmp` input to force the subtract) cut the
+ALU to **376 LUT4** and — because the single carry chain and pruned second adder pack far
+better — dropped the *flattened* SoC from 1187 to 1077 even before the counter. `tb/alu_tb.v`
+was adapted to drive `cmp` and validate EQ/LT/LTU in a forced-subtract phase, still against an
+independent `$signed`/`==`/`<` reference (never the DUT's own output).
+
+**Counter cost kept minimal.** The low word is a plain +1; the high word increments only on the
+clk where the low word rolls over (`&cycles`), so the carry into the high half is one AND-reduce,
+not a 64-bit ripple. The CSR read folds into the existing writeback OR (the ALU output is provably
+0 during a CSR read) with a single 32-bit half-select mux — no new writeback mux arm.
+
+**Revisit if:** a future feature needs those freed cells back and the 64-bit count is unused —
+but the split-carry counter and merged ALU are the cheap forms, so the first place to look would
+be the barrel shifter or the 6 KB RAM, not the counter.
+
+---
+
 ## D1 — Cycle counter is 32-bit, not the RISC-V-standard 64-bit (2026-08-29)
 
 **Decision.** Implement `RDCYCLE` as a 32-bit free-running counter. `RDCYCLEH` (the high half) reads

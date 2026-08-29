@@ -6,6 +6,12 @@
 //   2. A behavioural reference task: drives one (in1, in2, funct3, funct7_5)
 //      vector and checks out/EQ/LT/LTU against plain Verilog operators
 //      ($signed, >>>, <) — independent of the DUT's implementation.
+//
+// The ALU shares a single add/sub unit, so its compare outputs EQ/LT/LTU are
+// defined ONLY while it subtracts. The bench therefore drives `cmp` (which
+// forces a subtract, exactly as the Processor does for branch compares) to a
+// second phase of each vector and checks EQ/LT/LTU there, still against an
+// independent behavioural reference — never against the DUT's own `out`.
 module alu_tb;
   `include "check.vh"
   `WATCHDOG(1_000_000)
@@ -13,18 +19,36 @@ module alu_tb;
   reg  [31:0] in1 = 32'h0, in2 = 32'h0;
   reg  [2:0]  funct3 = 3'b0;
   reg         funct7_5 = 1'b0;
+  reg         cmp = 1'b0;
   wire [31:0] out;
   wire        EQ, LT, LTU;
 
   ALU dut (.in1(in1), .in2(in2), .funct3(funct3), .funct7_5(funct7_5),
-           .out(out), .EQ(EQ), .LT(LT), .LTU(LTU));
+           .cmp(cmp), .out(out), .EQ(EQ), .LT(LT), .LTU(LTU));
 
-  // ---- behavioural reference: one vector, 4 checks ----
+  // ---- compare reference: force subtract, check the three flags ----
+  // Independent of the DUT: EQ/LT/LTU are compared to ==, $signed<, <.
+  task check_cmp(input [31:0] a, input [31:0] b);
+    begin
+      in1 = a; in2 = b; cmp = 1'b1; #1;
+      `CHECK_EQ(EQ,  (a == b), "EQ")
+      `CHECK_EQ(LT,  ($signed(a) < $signed(b)), "LT")
+      `CHECK_EQ(LTU, (a < b), "LTU")
+      cmp = 1'b0;
+    end
+  endtask
+
+  // ---- behavioural reference: one vector, out + the three flags ----
   task check_op(input [31:0] a, input [31:0] b, input [2:0] f3, input f5);
     reg [31:0] eout;
     reg [4:0]  sh;
     begin
-      in1 = a; in2 = b; funct3 = f3; funct7_5 = f5;
+      // Compare outputs are defined only while subtracting; validate them in
+      // a forced-subtract phase first (same operands, independent reference).
+      check_cmp(a, b);
+      // Op phase last, so `out` is left settled for any following
+      // hand-anchored out check (cmp back to 0 = the op's natural mode).
+      in1 = a; in2 = b; funct3 = f3; funct7_5 = f5; cmp = 1'b0;
       sh = b[4:0];
       case (f3)
         3'b000: eout = f5 ? (a - b) : (a + b);
@@ -44,9 +68,6 @@ module alu_tb;
       endcase
       #1;
       `CHECK_EQ(out, eout, "out")
-      `CHECK_EQ(EQ,  (a == b), "EQ")
-      `CHECK_EQ(LT,  ($signed(a) < $signed(b)), "LT")
-      `CHECK_EQ(LTU, (a < b), "LTU")
     end
   endtask
 
@@ -100,16 +121,10 @@ module alu_tb;
     // SLTU unsigned: 0x80000000 < 1 is false
     check_op(32'h80000000, 32'h00000001, 3'b011, 1'b0);
     `CHECK_EQ(out, 32'h00000000, "hand: SLTU min<1")
-    // flags: equal operands
-    check_op(32'h00000005, 32'h00000005, 3'b000, 1'b0);
-    `CHECK_EQ(EQ, 1'b1, "hand: EQ 5==5")
-    `CHECK_EQ(LT, 1'b0, "hand: LT 5<5")
-    `CHECK_EQ(LTU, 1'b0, "hand: LTU 5<5")
+    // flags: equal operands (forced subtract)
+    check_cmp(32'h00000005, 32'h00000005);
     // flags: -1 vs 0 — signed less, unsigned greater
-    check_op(32'hFFFFFFFF, 32'h00000000, 3'b000, 1'b0);
-    `CHECK_EQ(LT, 1'b1, "hand: LT -1<0")
-    `CHECK_EQ(LTU, 1'b0, "hand: LTU -1<0 unsigned")
-    `CHECK_EQ(EQ, 1'b0, "hand: EQ -1==0")
+    check_cmp(32'hFFFFFFFF, 32'h00000000);
 
     // ---- edge-value sweep: 0, 1, -1, 0x7FFFFFFF, 0x80000000, all op variants ----
     evals[0] = 32'h00000000;
