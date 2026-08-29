@@ -151,3 +151,20 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    checks written that way passed first try while the literal ones failed. Resource alarm:
    92% of the part; the program-suite task is bench-only, but Loads/Stores will add logic —
    share the ALU's three barrel shifters (task-8 note) BEFORE loads/stores if pnr squeezes.
+- **Program suite** (task 12): bench-only, no RTL change (LCs stay 1182/92%, Fmax 47 MHz).
+   tb/programs_tb.v (90 checks, 4545 total): fib(10)=55 loop, gcd(48,18)=6 subtraction loop,
+   CALL/RET sub called twice (a0=5→11, a0=20→41), nested main→f1→f2 with ra saved to x20 via
+   ADDI + sp(x2) frame push/pop (acc 1+10+100=111, sp balanced, ra restored). Pattern: all
+   four programs assembled MID-SIM into the live MEM (memPC=0 between programs, rest filled
+   with EBREAK), run sequentially on the one Processor; halt = fetch strobe quiet 8 cycles;
+   mid-run state polled at unique PCs; every word cross-checked vs hand-encoded expWord.
+   Label workflow: pre-init `integer Lx = <byte addr>;` — Label() verifies vs memPC and
+   endASM() $finishes the bench (no PASS) on a mismatch; LabelRef(L) returns L−memPC
+   (relative), so JAL/branches take LabelRef directly. 5 FAILs, all mine, DUT+lib right
+   again: (1) blt nibble swap 0x008C4663→0x0084C663; (2) I-type imm field is imm[11:0] —
+   addi x2,x2,-4 = 0xFFC10113, NOT 0xFFF10113 (imm[31:20] of the 32-bit value is wrong);
+   (3) copy-pasted jal +16 over the +8 site; (4) stray-bit typo 0x00010113; (5) polled PC 24
+   (the sub's own ADDI, x11 still pre-commit) instead of the return site PC 8 — poll PCs
+   where the checked writes have already committed. Advice for Loads (next): 92% full —
+   share the ALU's three barrel shifters (task-8 note) before adding load logic if pnr
+   squeezes; loads also need the LOAD wait state + byte-lane/sign-ext mux on mem_rdata.

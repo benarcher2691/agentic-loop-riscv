@@ -27,7 +27,7 @@ Architecture target, so no task requires rewriting an earlier one: `SOC` (clock,
 
 - [x] **LUI and AUIPC.** `LUI: rd <= Uimm`; `AUIPC: rd <= PC + Uimm`. Bench: LUI with bit 31 set, LUI + ADDI building a full 32-bit constant, AUIPC at two different PCs checked against hand-computed values.
 
-- [ ] **Program suite.** `tb/programs_tb.v`: complete programs with hand-verifiable results — fibonacci(10) = 55 by loop; gcd(48, 18) = 6 by subtraction loop; a subroutine using `CALL`/`RET` (ra/x1) called twice with different arguments in `a0`; nested calls that save/restore ra via `ADDI sp` + (for now) registers, since loads/stores do not exist yet. Each program ends with EBREAK; results checked in registers. No RTL change expected unless a bug surfaces — if so, fix it and add a regression check.
+- [x] **Program suite.** `tb/programs_tb.v`: complete programs with hand-verifiable results — fibonacci(10) = 55 by loop; gcd(48, 18) = 6 by subtraction loop; a subroutine using `CALL`/`RET` (ra/x1) called twice with different arguments in `a0`; nested calls that save/restore ra via `ADDI sp` + (for now) registers, since loads/stores do not exist yet. Each program ends with EBREAK; results checked in registers. No RTL change expected unless a bug surfaces — if so, fix it and add a regression check.
 
 - [ ] **Loads.** `Memory` and `Processor` become byte-addressable: LW, LH, LB, LHU, LBU with correct byte/halfword selection from `mem_addr[1:0]` and sign/zero extension; add a `LOAD` wait state for the synchronous memory. Bench: a data area written with `DATAW`/`DATAB` from the assembler; every load type at every byte offset (0..3 / 0,2) including values with the sign bit set; misaligned halfword at offset 1 is not required.
 
