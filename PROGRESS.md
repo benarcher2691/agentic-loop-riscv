@@ -165,6 +165,27 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    addi x2,x2,-4 = 0xFFC10113, NOT 0xFFF10113 (imm[31:20] of the 32-bit value is wrong);
    (3) copy-pasted jal +16 over the +8 site; (4) stray-bit typo 0x00010113; (5) polled PC 24
    (the sub's own ADDI, x11 still pre-commit) instead of the return site PC 8 — poll PCs
-   where the checked writes have already committed. Advice for Loads (next): 92% full —
+   where the checked writes have already committed.    Advice for Loads (next): 92% full —
    share the ALU's three barrel shifters (task-8 note) before adding load logic if pnr
    squeezes; loads also need the LOAD wait state + byte-lane/sign-ext mux on mem_rdata.
+- **Shrink the core** (task 13): the refactor itself was already sitting uncommitted from
+   iteration 17 (auto-commit ac26f16) — this session verified it instead of rewriting it.
+   All four techniques are in: one 33-bit subtractor (aluMinus) feeds SUB/EQ/LT/LTU and the
+   branch compares; one right-shifter with flip32 bit-reversal does SRL/SRA/SLL; one
+   PC+imm adder serves JAL/AUIPC/branch targets (JALR reuses the ALU ADD); branchCond
+   muxes the ALU's EQ/LT/LTU (no comparator in Processor); plus the `instr` register and
+   the x0 read muxes are gone (mem_rdata holds the instruction through EXECUTE;
+   RegisterBank[0] can only ever read 0). Numbers: 1182 LCs / 47 MHz / 5 BRAMs →
+   66 LCs flattened / 878 LUT4 unflattened / 118.76 MHz / 3 BRAMs. All 10 benches pass
+   unchanged (4545 checks).
+   Surprises: (1) the flattened count is PROGRAM-DEPENDENT — with the datapath cleaned up,
+   yosys prunes per-bit to what the ROM exercises: netlist PC is bits [9:2] only, x1 only
+   [4:0], regfile BRAMs narrowed to 16-bit, ROM to one BRAM. I verified the 66-LC netlist
+   really runs (port-level smoke bench in /tmp: LEDS walk cycle-exact) — and mid-session
+   the harness hardened make check with `make equiv` (RTL-vs-netlist co-sim, 4000 cycles)
+   and an unflattened-LUT4 budget gate, guarding this permanently. (2) A scratch program
+   exercising high bits (LUI/ADD/SRA) re-widens the flattened netlist to 681 LCs / 6 BRAMs.
+   Advice for Loads (next): watch the UNFLATTENED total (878/900), not the flattened 66 —
+   load/store logic (~250 cells) lands on the unflattened number, so the margin is ~22
+   LUT4; if it goes red, share further inside the ALU (e.g. fold the XOR arm into the
+   subtractor path) before touching module boundaries.
