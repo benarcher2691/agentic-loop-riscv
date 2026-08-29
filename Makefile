@@ -17,9 +17,9 @@ TBS      := $(sort $(wildcard tb/*_tb.v))
 SIMOK    := $(patsubst tb/%_tb.v,$(BUILD)/%.simok,$(TBS))
 IVFLAGS  := -g2012 -Wall -Wno-timescale -DBENCH -DFAST_SIM -I tb -I lib -I rtl   # FAST_SIM: short delays; BENCH: assembler self-checks
 
-.PHONY: check sim lint synth pnr equiv stat prog uart hwtest hwcheck clean
+.PHONY: check sim lint synth pnr equiv hwreset stat prog uart hwtest hwcheck clean
 
-check: sim lint synth pnr equiv stat
+check: sim lint synth pnr equiv hwreset stat
 	@echo "CHECK: OK"
 
 # --- simulation: every tb/*_tb.v is a self-checking bench that must print PASS
@@ -64,6 +64,14 @@ equiv: $(BUILD)/$(TOP).json tools/equiv_tb.v
 	@yosys -q -p "read_verilog -sv -DFAST_SIM $(RTL); synth_ice40 -top $(TOP); rename $(TOP) $(TOP)_synth; write_verilog -noattr $(BUILD)/$(TOP)_synth.v" >/dev/null   # FAST_SIM on both sides: same program as the RTL sim
 	@iverilog $(IVFLAGS) -s equiv_tb -o $(BUILD)/equiv.vvp tools/equiv_tb.v $(RTL) $(BUILD)/$(TOP)_synth.v "$$(yosys-config --datdir)/ice40/cells_sim.v"
 	@vvp -N $(BUILD)/equiv.vvp > $(BUILD)/equiv.log 2>&1; cat $(BUILD)/equiv.log | grep -E "MISMATCH|cycles=|PASS|FAIL"; grep -q '^PASS' $(BUILD)/equiv.log
+
+# --- hardware-reset pin: the ONLY stage compiled without FAST_SIM. Pins the
+#     65,536-cycle BRAM-readiness reset (the field-bug class; audit reviewer-4 gap 2).
+hwreset: tools/hwreset_tb.v rtl/clockworks.v tb/check.vh | $(BUILD)
+	@echo "=== hwreset (no FAST_SIM: hardware reset length)"
+	@iverilog -g2012 -Wall -Wno-timescale -I tb -o $(BUILD)/hwreset.vvp -s hwreset_tb tools/hwreset_tb.v rtl/clockworks.v
+	@vvp -N $(BUILD)/hwreset.vvp > $(BUILD)/hwreset.log 2>&1; s=$$?; grep -E "CHECKS|PASS|FAIL" $(BUILD)/hwreset.log; test $$s -eq 0
+	@grep -q '^PASS' $(BUILD)/hwreset.log
 
 # --- stat: utilisation, Fmax, and the logic budget. The budget is checked on the UNFLATTENED
 #     synthesis as well: with a constant ROM program, flattening lets yosys prune every
