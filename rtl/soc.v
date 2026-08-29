@@ -3,12 +3,13 @@
 // Processor + Memory run at full CLK speed (SLOW = 0 passes CLK through).
 // Address bit 22 selects IO space instead of RAM (word offsets):
 //   bit 2 -> LEDS write, bit 3 -> UART data write, bit 4 -> UART status
-//   read (bit 9 of the returned word = transmitter busy).
+//   read (bit 9 of the returned word = transmitter busy), bit 5 -> UART RX
+//   read: {23'd0, avail, data}, avail (bit 8) clears on the read.
 module SOC #(
     parameter SLOW = 0    // 0 = CPU at full CLK speed; >0 divides CLK by 2^SLOW
 ) (
     input  wire       CLK,   // 12 MHz board clock
-    input  wire       RXD,   // UART receive (host -> FPGA), unused for now
+    input  wire       RXD,   // UART receive (host -> FPGA)
     output wire       TXD,   // UART transmit (FPGA -> host)
     output wire [4:0] LEDS   // D1..D5
 );
@@ -30,8 +31,32 @@ module SOC #(
     wire ioLedsW  = ioSel & storeNow & mem_addr[2];
     wire ioUartW  = ioSel & storeNow & mem_addr[3];
     wire ioUartS  = ioSel & mem_addr[4];
+    wire ioUartRx = ioSel & mem_addr[5];
     wire uartReady;   // emitter handshake (declared early: used below)
     wire uartTx;
+
+    // UART receiver (host -> FPGA). rxAvail is the "unread byte pending"
+    // flag: set when the receiver completes a byte, cleared when software
+    // reads the RX word. Set-priority over the read-clear so a byte that
+    // completes exactly on the read cycle is not lost.
+    wire       uartRxValid;
+    wire [7:0] uartRxData;
+    reg        rxAvail = 1'b0;
+    always @(posedge clk) begin
+        if (!resetn)                   rxAvail <= 1'b0;
+        else if (uartRxValid)          rxAvail <= 1'b1;
+        else if (mem_rstrb & ioUartRx) rxAvail <= 1'b0;
+    end
+    UartRx #(
+        .CLK_HZ(12_000_000),
+        .BAUD  (115200)
+    ) uartRx (
+        .clk   (clk),
+        .resetn(resetn),
+        .rx    (RXD),
+        .data  (uartRxData),
+        .valid (uartRxValid)
+    );
 
     Processor processor (
         .clk      (clk),
@@ -65,7 +90,9 @@ module SOC #(
     always @(posedge clk) begin
         ioSelR <= mem_rstrb & ioSel;
         if (mem_rstrb & ioSel)
-            ioRdata <= ioUartS ? {22'd0, ~uartReady, 9'd0} : 32'd0;
+            ioRdata <= ioUartRx ? {23'd0, rxAvail, uartRxData}
+                                : ioUartS ? {22'd0, ~uartReady, 9'd0}
+                                          : 32'd0;
     end
     assign mem_rdata = ioSelR ? ioRdata : memRamRdata;
 
