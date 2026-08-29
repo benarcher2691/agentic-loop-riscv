@@ -238,3 +238,30 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    (next): Memory's +51 is the byte-enable read-modify-write merge (yosys log shows how it
    mapped); Processor's +74 is the store path; ALU 485 → ~250 remains the big prize per
    the harness note.
+
+- **Handoff from an interrupted session (hit the step cap mid-edit on "Shrink the core, round 2"; tree is RED). Its own notes, verbatim:**
+
+  > **Maximum steps for this agent have been reached.** Tools are disabled; here is the handoff state.
+  > 
+  > ## ⚠️ CRITICAL: The repo is currently MID-EDIT and `make check` is RED
+  > 
+  > `rtl/processor.v` will **not compile** right now. I restructured the AUIPC path (AUIPC now goes through the ALU) and replaced the 32-bit `pcImm`/`pcPlusImm` adder with a 10-bit `pcImm10`/`pcPlusImm10`, but three references to the old `pcPlusImm` wire still exist in the file and must be fixed before anything builds:
+  > 
+  > 1. **`wrData` mux** — remove the `isAUIPC ? pcPlusImm :` arm entirely (AUIPC now falls through to `aluOut`, which equals PC + Uimm; this is the whole point of the restructure).
+  > 2. **EXECUTE PC update** — change `doBranch ? {22'b0, pcPlusImm[9:0]}` to `doBranch ? {22'b0, pcPlusImm10}` (numerically identical: low 10 bits of the old 32-bit sum).
+  > 3. **`branchTarget` alias** — change `wire [31:0] branchTarget = pcPlusImm;` to `= {22'b0, pcPlusImm10;}` (benches only check it at small positive values 20/28/52, which agree).
+  > 
+  > ## What was accomplished (evidence-based ablation, all in `/var/folders/.../T/opencode/alu_exp`)
+  > 
+  > - `make check` was green at start: 4693 checks, 1010 unflattened LUT4 (ALU 485, Processor 451, Memory 51, Decoder 17, Clockworks 6), budget 1150. Task: reach ≤ 950.
+  > - **ALU ablation (485)**: shifter+flips ≈ 244, logic ops 94, subtractor/EQ/LT/LTU 92, ADD 52. Key findings: `flip32` IS pure wiring standalone, but costs ~44 (output) + ~33 (input mux) in the ALU because the SLL flip defeats mux-arm merging — hoisting to continuous assigns did **not** help (still 485). The task hint's "~250 ALU" is not achievable with the fixed interface (EQ/LT/LTU are checked on every vector in `tb/alu_tb.v`, so the always-on compare subtractor must stay → two adders minimum). ALU floor ≈ 485; leave it.
+  > - **Processor ablation (448 standalone)**: load path only 61 (already in the hint's suggested shape — hint's "~200" was wrong), store 4, branchCond 5, but the **`wrData` mux tree costs 231**, of which the AUIPC arm + its 32-bit `pcImm` mux + 32-bit adder ≈ 127.
+  > - **Designed fix (partially applied)**: route AUIPC through the ALU (`aluIn1 = isAUIPC ? PC : rs1Val`, `aluIn2` gains Uimm arm, `aluFunct3` forces 000 for AUIPC too) → PC+imm adder shrinks to 10 bits, `wrData` loses an arm. Estimated net ≈ −50 to −60 LUT4. Applied so far: `aluIn1`/`aluIn2`/`aluFunct3`/ALU instantiation and the `pcImm10`/`pcPlusImm10`/`jumpTarget` block (with updated comments).
+  > 
+  > ## Remaining work (next session)
+  > 
+  > 1. Apply the three fixes above, then `make sim` (all 12 benches, 4693 checks must pass unchanged — `lui_auipc_tb`'s `wrData`/register checks still hold since AUIPC writeback value is unchanged) and `make stat`.
+  > 2. If still above 950: (a) merge `ldExt`'s 5-arm case into 3 arms (LB/LBU and LH/LHU share data, `ldFunct3[2]` picks sign/zero fill; est. −10); (b) optionally move the ALU's output flip into `shRight` so SLL/SRL arms merge (est. −12).
+  > 3. `make check` fully green (incl. `equiv`), tick the task in `TASKS.md`, append before/after per-module numbers to `PROGRESS.md` (include the ablation findings — they contradict the task hint's estimates and will save the next shrink session hours), commit `task: shrink round 2 — AUIPC through ALU, 10-bit branch/JAL adder`.
+  > 4. Do **not** start the next task (Memory-mapped IO).
+

@@ -2,7 +2,7 @@
 description: Autonomous worker for one TASKS.md task per session, used by loop.sh
 mode: primary
 temperature: 0.2
-steps: 40
+steps: 60
 ---
 
 You are the worker inside an outer agentic loop building a RISC-V CPU in Verilog. Each
