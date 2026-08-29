@@ -39,7 +39,7 @@ meaningful change. If it is red when you start, fixing it is your first task.
 - No `#` delays, no `initial` blocks in `rtl/` except register initial values (`reg [4:0] x = 0;`) and memory initialisation (`initial begin MEM[0] = …; end` / the assembler).
 - Reset: synchronous, active-low `resetn`, generated inside `SOC` (the board has no reset button).
 - Memories: `reg [31:0] MEM [0:N-1]` with a **synchronous** read (`always @(posedge clk) rdata <= MEM[addr]`) so yosys maps them to block RAM. The part has 8 KB of BRAM total.
-- Anything slow for the human (LED blink rates, delay loops) must be a `parameter` or under `` `ifdef BENCH `` so simulations stay fast.
+- Anything slow for the human (LED blink rates, delay loops) must be a `parameter` or under `` `ifdef FAST_SIM `` so simulations stay fast. `FAST_SIM` is defined for every simulation **and** for the gate-level `equiv` netlist, never for the bitstream. (`BENCH` is reserved for the assembler library's own self-checks; do not use it for your constants.)
 - Names testbenches rely on (keep them): `Processor` has `reg [31:0] RegisterBank [0:31]`, `reg [31:0] PC`, and `state`; `Memory` has `reg [31:0] MEM [...]`. Benches read these with hierarchical references (`dut.RegisterBank[3]`).
 
 ## Testbench rules — be meticulous

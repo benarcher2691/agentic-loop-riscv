@@ -40,7 +40,7 @@ module Memory (
         ADDI(x9, x0, 1);         // LED pattern = 1
         Label(LSTEP);
         SW(x9, x5, 4);           // LEDS <- pattern
-`ifdef BENCH
+`ifdef FAST_SIM
         ADDI(x14, x0, 2);        // ~30 cycles per step in simulation
         ADDI(x14, x14, 0);
 `else

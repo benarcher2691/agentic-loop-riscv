@@ -20,7 +20,7 @@ module equiv_tb;
       if (mism <= 5) $display("MISMATCH cycle %0d: rtl LEDS=%b TXD=%b  synth LEDS=%b TXD=%b", cyc, LEDS_r, TXD_r, LEDS_s, TXD_s);
     end
     if (LEDS_r !== last) begin changes = changes + 1; last = LEDS_r; end
-    if (cyc == 4000) begin
+    if (cyc == 40000) begin
       $display("cycles=%0d led_changes(rtl)=%0d mismatches=%0d final rtl=%b synth=%b", cyc, changes, mism, LEDS_r, LEDS_s);
       if (mism == 0) $display("PASS"); else $display("FAIL");
       $finish;

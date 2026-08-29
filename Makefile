@@ -13,7 +13,7 @@ BUILD    := build
 RTL      := $(sort $(wildcard rtl/*.v))
 TBS      := $(sort $(wildcard tb/*_tb.v))
 SIMOK    := $(patsubst tb/%_tb.v,$(BUILD)/%.simok,$(TBS))
-IVFLAGS  := -g2012 -Wall -Wno-timescale -DBENCH -I tb -I lib -I rtl
+IVFLAGS  := -g2012 -Wall -Wno-timescale -DBENCH -DFAST_SIM -I tb -I lib -I rtl   # FAST_SIM: short delays; BENCH: assembler self-checks
 
 .PHONY: check sim lint synth pnr equiv stat prog uart clean
 
@@ -57,7 +57,7 @@ $(BUILD)/$(TOP).bin: $(BUILD)/$(TOP).asc
 # --- gate-level check: RTL and the synthesized netlist must agree on every port, every cycle
 equiv: $(BUILD)/$(TOP).json tools/equiv_tb.v
 	@echo "=== equiv (RTL vs post-synthesis netlist)"
-	@yosys -q -p "read_verilog -sv $(RTL); synth_ice40 -top $(TOP); rename $(TOP) $(TOP)_synth; write_verilog -noattr $(BUILD)/$(TOP)_synth.v" >/dev/null
+	@yosys -q -p "read_verilog -sv -DFAST_SIM $(RTL); synth_ice40 -top $(TOP); rename $(TOP) $(TOP)_synth; write_verilog -noattr $(BUILD)/$(TOP)_synth.v" >/dev/null   # FAST_SIM on both sides: same program as the RTL sim
 	@iverilog $(IVFLAGS) -s equiv_tb -o $(BUILD)/equiv.vvp tools/equiv_tb.v $(RTL) $(BUILD)/$(TOP)_synth.v "$$(yosys-config --datdir)/ice40/cells_sim.v"
 	@vvp -N $(BUILD)/equiv.vvp > $(BUILD)/equiv.log 2>&1; cat $(BUILD)/equiv.log | grep -E "MISMATCH|cycles=|PASS|FAIL"; grep -q '^PASS' $(BUILD)/equiv.log
 
