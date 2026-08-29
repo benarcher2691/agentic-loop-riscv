@@ -10,26 +10,6 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
 
    module to include into.
 
-- **Handoff captured by loop.sh — iteration 1 ended without ticking its task (tree: green). The session's last message, verbatim:**
-
-  > `make check` fully green: **ALU 485 → 434 LUT4, total 1082 → 1031, pnr 1033 LCs (80%), Fmax 41.09 MHz, equiv clean, all 5154 checks unchanged.**
-  > 
-  > The task's specific targets (ALU ≤ 320, total ≤ 980) are another matter — I've now measured 12 structural variants and can show they're unreachable with the bench unchanged. Per AGENTS.md, I'll leave the task unchecked, document the proof, and commit the real improvement. Writing the PROGRESS.md entry:
-  > Now the commit — first inspect the repo state per the workflow:
-  > Session complete. Summary of what happened:
-  > 
-  > **Task: "Shrink the core, round 3 — the ALU"** (first unchecked in TASKS.md)
-  > 
-  > **Result: ALU 485 → 434 LUT4** (−51), `make check` fully green — 5154 checks in 14 benches unchanged, equiv clean, unflattened total 1082 → 1031 (budget 1150), pnr 1033 LCs (80%), Fmax 41.09 MHz.
-  > 
-  > **What landed in `rtl/alu.v`:**
-  > 1. **Output mux split on `funct3[2]`** into two full 4-arm cases on `funct3[1:0]` + one final 2:1 — the single 8-arm `case (funct3)` was the real problem: a logic-only ablation costs 162 LUT4 under a 3-bit case but **32 LUT4 (1/bit)** under a 2-bit case. −49.
-  > 2. **Left-shifter mirror**: SLL shifts `in1` directly; SRL/SRA shift the bit-reversed operand and flip the output. The reversal mux is selected by plain `funct3[2]` (SLL=001/SRL=101 differ only in that bit; all other encodings are shifter don't-cares), so the `isSLL` decoder disappears. −2.
-  > 
-  > **Why the task's ≤320/≤980 targets are left unmet (task deliberately left unchecked, per AGENTS.md):** I measured 12 structural variants and the floors are provable — the bench checks `EQ/LT/LTU` against a pure `in1` vs `in2` compare on *every* vector, which makes the always-on compare subtractor non-negotiable (the task's approach (2), merging ADD/SUB into one adder, fails on `sweep_pair(1,−1)` with ADD: out=0 but EQ must be 0); the SLL/SRL reversal mux is information-theoretically necessary; the 5×32 log-shift stages measure 165 pure; and the output mux needs ≥5 LUT4/bit. Floor ≈ 430; 434 is at it. Total ≤980 would need ALU ≤383 with Processor/Memory frozen — below the floor. All of this, plus the measured dead-end table (explicit stages = no-op, pre-muxing +49, ternaries +41, carry-chain EQ +22, add-form subtractor polarity trap, etc.) and the options for the harness, is written into PROGRESS.md so the next session doesn't re-derive it.
-  > 
-  > Committed as `75c086f`. Stopping here — one task per session.
-
 - **6 KB of RAM** (task 23, phase 2): found the task already merged — the WIP branch
    (ae28291, parked at 1162 LUT4 over budget) was merged as bc21d76 once shrink round 3
    freed ALU 485→434; this session verified the merge instead of rewriting it. Memory is
@@ -103,7 +83,6 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
   > All sims pass (14766 checks). Now the budget test:
   > `make check` is green — but pnr landed at **exactly** 1150/1150. That's too fragile: PROGRESS.md notes abc run-to-run noise of ±5 LUT4, so a re-run could tip it red. Let me find real headroom. First candidate: the `x1` mirror output (32 FFs) — is it used anywhere?
 
-
 - **Stack + UART byte primitives** (phase 3, task 1): resident program rewritten — sp = x2 = 0x1800
    (one past the 6 KB top, growing down), banner now goes one word per char through PUTBYTE
    (LW not LB — see below), then MAIN calls ECHO2 forever. ECHO2 is the non-leaf demo: push ra,
@@ -127,3 +106,31 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    the deterministic idle state is PC 84..100 with sp=0x17FC/ra=60 — benches poll for that PC
    range before hierarchical checks. (5) The echo2 bench task needs fork/join: the first echo's
    start edge lands mid-stop of the incoming frame, a sequential recv misses it.
+
+
+- **Monitor command protocol** (phase 3, task 2): ECHO2 replaced by the command loop
+   (V/W/R/G/unknown). Key trick: GET32/PUT32 assemble/disassemble words through an 8-byte
+   stack frame (ra at sp+4, scratch word at sp+0) using SB/LBU — no shifter, no OR needed,
+   and the frame is collision-free by construction. MAIN re-establishes x5 every iteration
+   and the G arm again after JALR (a G routine may clobber all but sp). SOC: the LED word
+   at 0x400004 is now readable as the ioRdata *default* arm ({27'd0, ledReg}) — cheaper than
+   a dedicated decode; ledReg's declaration had to move ABOVE the read-path always block
+   (iverilog elaboration binds uses to declarations in source order). Benches: monitor_tb
+   (111) drives the full matrix incl. a G-uploaded 10-word sum routine (assembled in the
+   bench via the lib — the bench array MUST be named MEM) and a post-G survival V; the
+   monitor_io_tb rewrite spies PUT32's live sp-dip to 0x17F8 with a `wait` in a fork arm;
+   soc_tb's three-way ROM cross-check regenerated from an independent python encoder
+   (scratch, not committed) — surprise: the lib's LUI takes the FINAL 32-bit value
+   (0x00400000 → 0x004002B7), my encoder's first cut passed the imm20 field and got
+   0x400002B7; the three-way check caught it exactly as designed. 14766 → 15059 checks.
+   Budget: 1149/1150 unflattened — the LEDS-read arm (+6 on SOC 52→58) was fully absorbed
+   by abc run-to-run noise (Processor 501→497, Memory 120→119 with ROM-only changes);
+   pnr 1136/1280, 37.72 MHz, equiv clean, 16 BRAM.
+   Advice for the next task (hwprogs): it should be bench-only (no RTL edits), which matters
+   because there is exactly ONE LUT4 of headroom — if you must touch rtl/, run a scratch
+   yosys ablation first. The monitor protocol is stable: uploaded code must use relative
+   branches only (G jumps to an absolute address, fine), W writes bytes with SB (note: every
+   byte lane of the LED word hits the ledReg latch, so write it with len=1, not 4), R has no
+   reply byte, W/G reply K, unknown replies '?'. The deterministic idle state is PC 348..363
+   with sp=0x1800/ra=48 — poll that range before hierarchical checks. The exchange helper
+   needs fork/join (a reply's start bit can land mid-stop of the last command byte).

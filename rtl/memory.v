@@ -14,30 +14,41 @@ module Memory (
 );
     reg [31:0] MEM [0:1535];
 
-    // ROM program: the hardware demo / monitor front end. Sets up the IO
-    // base (x5 = 0x400000) and the stack pointer (x2 = 0x1800, one past the
-    // top of the 6 KB RAM, growing down; the monitor's code will live low),
-    // prints "Loop RISC-V\n" over the UART one byte per message word via
-    // PUTBYTE, then calls ECHO2 forever. ECHO2 is a non-leaf subroutine: it
-    // pushes ra (x1) at sp-4, reads one byte with GETBYTE (blocking poll of
-    // the RX word 0x400020 until avail bit 8; the read clears avail), calls
-    // PUTBYTE twice — once with the byte, once with byte+1 — restores ra and
-    // sp, and returns. PUTBYTE polls the TX status 0x400010 until busy
-    // (bit 9) is low, then writes the byte to the UART data register
-    // 0x400008 (the SOC takes bits [7:0]). GETBYTE and PUTBYTE are leaves:
-    // no calls, so they skip the push/pop. The program deliberately sticks
-    // to LW/SW/ADDI/ANDI/BNE/JAL/JALR/LUI (no LB/BEQ): with the constant ROM
-    // the flattened netlist then prunes the byte-lane load logic and the
-    // branch-condition mux, which is what keeps the part under the LC
-    // budget. tb/soc_tb.v, tb/memory_tb.v and tb/monitor_io_tb.v keep
-    // copies / cross-checks of these words.
+    // ROM program: the UART monitor. Sets up the IO base (x5 = 0x400000)
+    // and the stack pointer (x2 = 0x1800, one past the top of the 6 KB RAM,
+    // growing down), prints "Loop RISC-V\n" over the UART one byte per
+    // message word via PUTBYTE, then runs the monitor command loop forever:
+    // read a command byte with GETBYTE, dispatch, repeat. Commands (all
+    // multi-byte values little-endian 32-bit via GET32/PUT32, which call
+    // GETBYTE/PUTBYTE four times through the stack):
+    //   'V' (0x56)          -> PUT32 the 4 bytes "RV32"
+    //   'W' addr len data.. -> write len bytes to addr (RAM or IO), reply 'K'
+    //   'R' addr len        -> send the len bytes read from addr
+    //   'G' addr            -> JALR to addr (routine returns with RET; it
+    //                          may clobber everything but sp), reply 'K'
+    //   anything else       -> reply '?'
+    // GETBYTE (leaf) polls the RX word 0x400020 until avail (bit 8) is set
+    // and returns the byte in a0; the read clears avail. PUTBYTE (leaf)
+    // polls the TX status 0x400010 until busy (bit 9) is low, then writes
+    // a0's low byte to 0x400008. GET32/PUT32 assemble/disassemble a word
+    // through a scratch slot on their own stack frame (push 8: ra at sp+4,
+    // word at sp+0) using SB / LBU — no shifts, no OR. MAIN re-establishes
+    // x5 every iteration and the G arm re-establishes it after the call,
+    // because a G routine may clobber every register except sp. The program
+    // sticks to LW/SW/SB/LBU/ADD/ADDI/ANDI/LUI/BNE/JAL/JALR (no BEQ, no
+    // halfword ops, no shifts). tb/soc_tb.v, tb/memory_tb.v,
+    // tb/monitor_io_tb.v and tb/monitor_tb.v keep copies / cross-checks of
+    // these words.
     `include "../lib/riscv_assembly.v"
-    integer WBYTE = 20, MAIN = 40, ECHO2 = 48, GETBYTE = 84, GBDONE = 100, PUTBYTE = 108;
+    integer WBYTE = 20, MAIN = 40, CHK_W = 72, WLOOP = 96, WBODY = 104,
+           WK = 124, CHK_R = 136, RLOOP = 160, RBODY = 168, CHK_G = 188,
+           UNK = 224, GET32 = 236, PUT32 = 292, GETBYTE = 348, GBDONE = 364,
+           PUTBYTE = 372;
     initial begin
         LUI(x5, 32'h00400000);   // x5 = 0x400000 IO base
         LUI(x2, 32'h2000);       // x2 = 0x2000 (lib LUI takes the FINAL value)
         ADDI(x2, x2, -2048);     // sp = 0x1800: one past the top of RAM
-        ADDI(x6, x0, 128);       // x6 = &message (byte 128 = word 32)
+        ADDI(x6, x0, 392);       // x6 = &message (byte 392 = word 98)
         ADDI(x7, x0, 12);        // 12 banner bytes
         Label(WBYTE);
         LW(x10, x6, 0);          // x10 = message word (char in bits [7:0])
@@ -45,18 +56,94 @@ module Memory (
         ADDI(x6, x6, 4);         // p++ (one word per char)
         ADDI(x7, x7, -1);        // count--
         BNE(x7, x0, LabelRef(WBYTE));
-        Label(MAIN);
-        JAL(x1, LabelRef(ECHO2)); // ra = 44 (the J below); call ECHO2
-        JAL(x0, LabelRef(MAIN));  // forever
-        Label(ECHO2);
-        ADDI(x2, x2, -4);        // push: sp -= 4
-        SW(x1, x2, 0);           // save ra
-        JAL(x1, LabelRef(GETBYTE));  // a0 = one byte (blocking)
-        JAL(x1, LabelRef(PUTBYTE));  // echo it
-        ADDI(x10, x10, 1);       // a0 = byte + 1
-        JAL(x1, LabelRef(PUTBYTE));  // echo it again (nested call #2)
-        LW(x1, x2, 0);           // restore ra
-        ADDI(x2, x2, 4);         // pop: sp += 4
+        Label(MAIN);             // ---- command loop ----
+        LUI(x5, 32'h00400000);   // re-establish IO base (G clobbers regs)
+        JAL(x1, LabelRef(GETBYTE)); // a0 = command byte
+        ADDI(x11, x0, 8'h56);    // 'V'
+        BNE(x10, x11, LabelRef(CHK_W));
+        LUI(x10, 32'h32335000);  // a0 = "RV32" little-endian:
+        ADDI(x10, x10, 32'h652); //   0x32335652 = 'R','V','3','2'
+        JAL(x1, LabelRef(PUT32));
+        JAL(x0, LabelRef(MAIN));
+        Label(CHK_W);
+        ADDI(x11, x0, 8'h57);    // 'W'
+        BNE(x10, x11, LabelRef(CHK_R));
+        JAL(x1, LabelRef(GET32)); // a0 = addr
+        ADDI(x9, x10, 0);        // x9 = ptr
+        JAL(x1, LabelRef(GET32)); // a0 = len
+        ADDI(x14, x10, 0);       // x14 = count
+        Label(WLOOP);
+        BNE(x14, x0, LabelRef(WBODY));
+        JAL(x0, LabelRef(WK));   // count == 0: done, reply K
+        Label(WBODY);
+        JAL(x1, LabelRef(GETBYTE)); // a0 = data byte
+        SB(x10, x9, 0);          // *ptr = byte (RAM or IO space)
+        ADDI(x9, x9, 1);         // ptr++
+        ADDI(x14, x14, -1);      // count--
+        JAL(x0, LabelRef(WLOOP));
+        Label(WK);
+        ADDI(x10, x0, 8'h4B);    // 'K'
+        JAL(x1, LabelRef(PUTBYTE));
+        JAL(x0, LabelRef(MAIN));
+        Label(CHK_R);
+        ADDI(x11, x0, 8'h52);    // 'R'
+        BNE(x10, x11, LabelRef(CHK_G));
+        JAL(x1, LabelRef(GET32)); // a0 = addr
+        ADDI(x9, x10, 0);        // x9 = ptr
+        JAL(x1, LabelRef(GET32)); // a0 = len
+        ADDI(x14, x10, 0);       // x14 = count
+        Label(RLOOP);
+        BNE(x14, x0, LabelRef(RBODY));
+        JAL(x0, LabelRef(MAIN)); // done (no reply byte)
+        Label(RBODY);
+        LBU(x10, x9, 0);         // a0 = *ptr (zero-extended byte)
+        JAL(x1, LabelRef(PUTBYTE));
+        ADDI(x9, x9, 1);         // ptr++
+        ADDI(x14, x14, -1);      // count--
+        JAL(x0, LabelRef(RLOOP));
+        Label(CHK_G);
+        ADDI(x11, x0, 8'h47);    // 'G'
+        BNE(x10, x11, LabelRef(UNK));
+        JAL(x1, LabelRef(GET32)); // a0 = routine address
+        ADDI(x9, x10, 0);        // x9 = target
+        JALR(x1, x9, 0);         // call it; returns with RET
+        LUI(x5, 32'h00400000);   // the routine clobbered x5 (and the rest)
+        ADDI(x10, x0, 8'h4B);    // 'K'
+        JAL(x1, LabelRef(PUTBYTE));
+        JAL(x0, LabelRef(MAIN));
+        Label(UNK);
+        ADDI(x10, x0, 8'h3F);    // '?'
+        JAL(x1, LabelRef(PUTBYTE));
+        JAL(x0, LabelRef(MAIN));
+        Label(GET32);            // a0 <- 4 UART bytes, little-endian
+        ADDI(x2, x2, -8);        // push {ra, scratch word}
+        SW(x1, x2, 4);           // save ra at sp+4
+        JAL(x1, LabelRef(GETBYTE));
+        SB(x10, x2, 0);          // byte 0 -> lane 0 (LSB)
+        JAL(x1, LabelRef(GETBYTE));
+        SB(x10, x2, 1);          // byte 1 -> lane 1
+        JAL(x1, LabelRef(GETBYTE));
+        SB(x10, x2, 2);          // byte 2 -> lane 2
+        JAL(x1, LabelRef(GETBYTE));
+        SB(x10, x2, 3);          // byte 3 -> lane 3 (MSB)
+        LW(x10, x2, 0);          // a0 = assembled word
+        LW(x1, x2, 4);           // restore ra
+        ADDI(x2, x2, 8);         // pop
+        JALR(x0, x1, 0);         // RET
+        Label(PUT32);            // send a0's 4 bytes, little-endian
+        ADDI(x2, x2, -8);        // push {ra, scratch word}
+        SW(x1, x2, 4);           // save ra at sp+4
+        SW(x10, x2, 0);          // word -> scratch
+        LBU(x10, x2, 0);         // byte 0 (LSB)
+        JAL(x1, LabelRef(PUTBYTE));
+        LBU(x10, x2, 1);         // byte 1
+        JAL(x1, LabelRef(PUTBYTE));
+        LBU(x10, x2, 2);         // byte 2
+        JAL(x1, LabelRef(PUTBYTE));
+        LBU(x10, x2, 3);         // byte 3 (MSB)
+        JAL(x1, LabelRef(PUTBYTE));
+        LW(x1, x2, 4);           // restore ra
+        ADDI(x2, x2, 8);         // pop
         JALR(x0, x1, 0);         // RET
         Label(GETBYTE);          // leaf: a0 = blocking RX byte
         LW(x10, x5, 32);         // RX word {23'd0, avail, data}; read clears avail

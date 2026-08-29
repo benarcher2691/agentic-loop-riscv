@@ -2,9 +2,11 @@
 // Top level for the iCEstick. Port names must match boards/icestick.pcf.
 // Processor + Memory run at full CLK speed (SLOW = 0 passes CLK through).
 // Address bit 22 selects IO space instead of RAM (word offsets):
-//   bit 2 -> LEDS write, bit 3 -> UART data write, bit 4 -> UART status
-//   read (bit 9 of the returned word = transmitter busy), bit 5 -> UART RX
-//   read: {23'd0, avail, data}, avail (bit 8) clears on the read.
+//   bit 2 -> LEDS word: writes take mem_wdata[4:0], reads return
+//            {27'd0, ledReg} (so the monitor's R command can read it back),
+//   bit 3 -> UART data write, bit 4 -> UART status read (bit 9 of the
+//   returned word = transmitter busy), bit 5 -> UART RX read:
+//   {23'd0, avail, data}, avail (bit 8) clears on the read.
 module SOC #(
     parameter SLOW = 0    // 0 = CPU at full CLK speed; >0 divides CLK by 2^SLOW
 ) (
@@ -42,6 +44,7 @@ module SOC #(
     wire       uartRxValid;
     wire [7:0] uartRxData;
     reg        rxAvail = 1'b0;
+    reg [4:0]  ledReg = 5'd0;   // LEDS: written by software, reset dark
     always @(posedge clk) begin
         if (!resetn)                   rxAvail <= 1'b0;
         else if (uartRxValid)          rxAvail <= 1'b1;
@@ -84,7 +87,9 @@ module SOC #(
     // Read return path: the RAM's synchronous read, or the IO status word.
     // ioSelR registers the fact that the strobe in flight targeted IO (the
     // combinational ioSel is gone by the LOAD wait state, when the
-    // Processor actually consumes mem_rdata).
+    // Processor actually consumes mem_rdata). The final else arm is the
+    // LEDS word (word offset 1, mem_addr[2]) — the only remaining IO read
+    // address; reads of unused IO words also return it, which nothing does.
     reg        ioSelR = 1'b0;
     reg [31:0] ioRdata = 32'd0;
     always @(posedge clk) begin
@@ -92,12 +97,12 @@ module SOC #(
         if (mem_rstrb & ioSel)
             ioRdata <= ioUartRx ? {23'd0, rxAvail, uartRxData}
                                 : ioUartS ? {22'd0, ~uartReady, 9'd0}
-                                          : 32'd0;
+                                          : {27'd0, ledReg};
     end
     assign mem_rdata = ioSelR ? ioRdata : memRamRdata;
 
-    // LEDS: written by software, reset dark.
-    reg [4:0] ledReg = 5'd0;
+    // LEDS: written by software (declaration above, needed early for the
+    // read path), reset dark.
     always @(posedge clk) begin
         if (!resetn)      ledReg <= 5'd0;
         else if (ioLedsW) ledReg <= mem_wdata[4:0];
