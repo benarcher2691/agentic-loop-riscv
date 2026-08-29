@@ -20,7 +20,7 @@ PASS: received 'Loop RISC-V' within 5.0s
 
 | Module | Lines | What |
 |---|---|---|
-| `rtl/clockworks.v` | 46 | Clock divider + power-on reset (2¹⁶ cycles on hardware — see [the one bug](#the-one-bug-no-test-could-see)) |
+| `rtl/clockworks.v` | 48 | Clock divider + power-on reset (2¹⁶ cycles on hardware — see [the one bug](#the-one-bug-no-test-could-see)) |
 | `rtl/memory.v` | 72 | 1 KB byte-addressable RAM in block RAM, byte-write enables; holds the demo program |
 | `rtl/decoder.v` | 61 | Combinational RV32I decoder: 10 one-hot instruction classes, register fields, all five immediates |
 | `rtl/alu.v` | 70 | Shared 33-bit subtractor (SUB/EQ/LT/LTU), one right shifter (SLL by bit reversal), ADD, logic |

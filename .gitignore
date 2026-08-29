@@ -5,3 +5,4 @@ loop.log
 *.fst
 .DS_Store
 bitstreams/
+__pycache__/
