@@ -72,8 +72,12 @@ module Processor (
     wire        doJump  = isJAL | isJALR;
     wire [31:0] jumpTarget = isJAL ? (PC + Jimm)
                                    : ((rs1Val + Iimm) & ~32'h00000001);
+    // Branches compare rs1 vs rs2 through the ALU's dedicated compare
+    // outputs (funct3-independent); funct3 only picks which comparison
+    // decides the branch. The second ALU operand is therefore rs2 for
+    // branches as well — Iimm would corrupt the compare.
     wire        useAlu = isALUreg | isALUimm;
-    wire [31:0] aluIn2 = isALUreg ? rs2Val : Iimm;
+    wire [31:0] aluIn2 = (isALUreg | isBranch) ? rs2Val : Iimm;
     wire        aluF75 = isALUreg ? funct7[5] :
                          (isALUimm && funct3 == 3'b101) ? funct7[5] : 1'b0;
 
@@ -92,6 +96,24 @@ module Processor (
 
     wire        wrEn   = useAlu | doJump;
     wire [31:0] wrData = doJump ? (PC + 32'd4) : aluOut;
+
+    // Branch condition: funct3 selects among the ALU's EQ/LT/LTU and their
+    // complements (BGE/BNE/BGEU). Branches write no rd — isBranch stays out
+    // of wrEn — they only redirect the PC.
+    reg branchCond;
+    always @(*) begin
+      case (funct3)
+        3'b000:  branchCond = aluEQ;     // BEQ
+        3'b001:  branchCond = ~aluEQ;    // BNE
+        3'b100:  branchCond = aluLT;     // BLT
+        3'b101:  branchCond = ~aluLT;    // BGE
+        3'b110:  branchCond = aluLTU;    // BLTU
+        3'b111:  branchCond = ~aluLTU;   // BGEU
+        default: branchCond = 1'b0;
+      endcase
+    end
+    wire        doBranch     = isBranch & branchCond;
+    wire [31:0] branchTarget = PC + Bimm;
 
     assign mem_addr  = PC;
     assign mem_rstrb = (state == FETCH_INSTR);
@@ -121,7 +143,9 @@ module Processor (
                             RegisterBank[rdId] <= wrData;
                         if (wrEn && rdId == 5'd1)
                             x1 <= wrData;      // mirror of RegisterBank[1]
-                        PC    <= doJump ? jumpTarget : (PC + 32'd4);
+                        PC    <= doJump    ? jumpTarget :
+                                 doBranch  ? branchTarget :
+                                             (PC + 32'd4);
                         state <= FETCH_INSTR;
                     end
                 end

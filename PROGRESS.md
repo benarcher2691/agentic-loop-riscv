@@ -120,3 +120,19 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    Advice for Branches (next): EQ/LT/LTU already leave the ALU instance; extend the
    EXECUTE PC mux to `branch taken ? PC + Bimm` with taken = decoded per funct3 from
    those wires, and keep isBranch OUT of wrEn (branches write no rd).
+- **Branches** (task 10): processor.v — `aluIn2` now feeds rs2Val for branches too
+   (`(isALUreg|isBranch) ? rs2Val : Iimm`; Iimm would corrupt the compare), `branchCond`
+   is a funct3 mux over EQ/LT/LTU and their complements, `doBranch = isBranch & branchCond`
+   joins the EXECUTE PC mux (`doJump ? jumpTarget : doBranch ? PC+Bimm : PC+4`), isBranch
+   stays out of wrEn. New tb/branches_tb.v (87 checks): 4 per-cycle EXECUTE walks (BEQ
+   not-taken/taken, BLT taken, BLTU not-taken on the SAME −1 vs 0xFFFFFFFF operands —
+   checks aluLT/aluLTU/branchCond/branchTarget wires and the PC after the edge), free-run
+   to halt, 15 register checks (markers=1, poisons=0, backward BNE 2→1→0, loop sum 55),
+   37-word hand-encoding cross-check. 4416 total. LCs 979 → 1121 (87%), Fmax 44.68 MHz.
+   Surprises: two more hand-encoding slips, both caught by the lib cross-check, both MINE:
+   (1) add x21,x21,x20 — first put rs2 at rs1's shift (20<<15), then dropped bit 15 when
+   re-summing (0x014A0AB3 vs correct 0x014A8AB3); (2) addi x19,x19,-1 rd nibble (…913 vs
+   …993). The DUT/lib were right both times. Advice for LUI/AUIPC (next): add a wrData arm
+   (`isLUI ? Uimm : isAUIPC ? PC + Uimm : …`) and put isLUI|isAUIPC into wrEn — same shape
+   as the jump path. Resource warning: 87% of the part is used; if the next tasks squeeze,
+   share the ALU's three barrel shifters first (task-8 note) before touching anything else.

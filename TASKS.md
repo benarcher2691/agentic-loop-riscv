@@ -23,7 +23,7 @@ Architecture target, so no task requires rewriting an earlier one: `SOC` (clock,
 
 - [x] **Jumps: JAL and JALR.** `rd <= PC + 4`; JAL: `PC <= PC + Jimm`; JALR: `PC <= (rs1 + Iimm) & ~1`. Bench: forward and backward JAL, JALR through a register, `rd = x0` (no link written), a two-iteration loop counted in a register, link register value checked against the hand-computed address.
 
-- [ ] **Branches.** BEQ, BNE, BLT, BGE, BLTU, BGEU using the ALU's `EQ/LT/LTU`; `PC <= PC + Bimm` when taken. Bench: each branch taken *and* not taken; signed vs unsigned distinguished with `−1` vs `0xFFFFFFFF` operands; a countdown loop that sums 1..10 into a register (expect 55).
+- [x] **Branches.** BEQ, BNE, BLT, BGE, BLTU, BGEU using the ALU's `EQ/LT/LTU`; `PC <= PC + Bimm` when taken. Bench: each branch taken *and* not taken; signed vs unsigned distinguished with `−1` vs `0xFFFFFFFF` operands; a countdown loop that sums 1..10 into a register (expect 55).
 
 - [ ] **LUI and AUIPC.** `LUI: rd <= Uimm`; `AUIPC: rd <= PC + Uimm`. Bench: LUI with bit 31 set, LUI + ADDI building a full 32-bit constant, AUIPC at two different PCs checked against hand-computed values.
 
