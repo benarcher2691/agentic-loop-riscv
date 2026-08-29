@@ -2,7 +2,8 @@
 // Top level for the iCEstick. Port names must match boards/icestick.pcf.
 // Processor + Memory run at full CLK speed (SLOW = 0 passes CLK through).
 // Address bit 22 selects IO space instead of RAM (word offsets):
-//   bit 2 -> LEDS word: writes take mem_wdata[4:0], reads return
+//   bit 2 -> LEDS word: a write updates ledReg from mem_wdata[4:0] on the
+//            low byte lane only (mem_wmask[0]); reads return
 //            {27'd0, ledReg} (so the monitor's R command can read it back),
 //   bit 3 -> UART data write, bit 4 -> UART status read (bit 9 of the
 //   returned word = transmitter busy), bit 5 -> UART RX read:
@@ -30,7 +31,10 @@ module SOC #(
     // per store, with mem_addr = the effective address.
     wire ioSel    = mem_addr[22];
     wire storeNow = |mem_wmask;
-    wire ioLedsW  = ioSel & storeNow & mem_addr[2];
+    // LED write: gate on the low byte lane (mem_wmask[0]) so a multi-byte
+    // write (e.g. the monitor's byte-wise W of a whole word) updates ledReg
+    // only from the byte carrying the value, not from the high zero bytes.
+    wire ioLedsW  = ioSel & mem_addr[2] & mem_wmask[0];
     wire ioUartW  = ioSel & storeNow & mem_addr[3];
     wire ioUartS  = ioSel & mem_addr[4];
     wire ioUartRx = ioSel & mem_addr[5];

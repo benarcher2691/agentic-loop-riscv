@@ -230,12 +230,17 @@ module monitor_tb;
     w = {rxbuf[3], rxbuf[2], rxbuf[1], rxbuf[0]};
     `CHECK_EQ(w, sum, "G routine summed the 8 words into 0x420")
 
-    // The LED word: write 5'b10101 with W (one byte — the LED word latches
-    // mem_wdata[4:0] on every write strobe, so a 4-byte write would leave
-    // it dark), check the pins, then R it back as {27'd0, ledReg}.
-    txbuf[9] = 8'h15;
-    cmd_W(32'h00400004, 32'd1);
-    `CHECK_EQ(LEDS, 5'b10101, "W to 0x400004 lights LEDS with 5'b10101")
+    // The LED word: write the FULL 32-bit word 0x00000015 as FOUR bytes — this
+    // is exactly what `hw.py poke 0x400004 0x15` does. Regression for the byte-
+    // write clobber: the low byte (0x15) must light 5'b10101 and the three high
+    // zero bytes must NOT clear it (they hit other lanes; ledReg gates on
+    // mem_wmask[0]). Then R it back as {27'd0, ledReg}.
+    txbuf[9]  = 8'h15;   // -> 0x400004 lane 0 (sets ledReg)
+    txbuf[10] = 8'h00;   // -> 0x400005 lane 1 (must not clobber)
+    txbuf[11] = 8'h00;   // -> 0x400006 lane 2
+    txbuf[12] = 8'h00;   // -> 0x400007 lane 3
+    cmd_W(32'h00400004, 32'd4);
+    `CHECK_EQ(LEDS, 5'b10101, "byte-wise 4-byte W keeps LEDS 5'b10101 (high zero bytes do not clobber)")
     cmd_R(32'h00400004, 32'd4);
     `CHECK_EQ(rxbuf[0], 8'h15, "LED word byte 0 reads back 0x15")
     `CHECK_EQ(rxbuf[1], 8'h00, "LED word byte 1 reads back 0x00")
