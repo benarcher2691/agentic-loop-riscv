@@ -19,8 +19,12 @@
 #                 returned without acting (empty/text-only turn). Duds are retried and do not
 #                 count toward STUCK_LIMIT; DUD_LIMIT consecutive duds stop the loop.  (30 / 3)
 #   ON_RED        keep | revert — uncommitted changes after a non-green iteration (keep)
-#   CHECK_CMD     the verifier                                            (make -s check)
-#   TEST_COUNT_RE regex whose last number is the passing-test count      (CHECKS TOTAL: [0-9]+)
+#   CHECK_CMD     the verifier; default: `make -s check` if a Makefile exists, else `npm run -s check`
+#   TEST_COUNT_RE regex whose last number is the passing-test count
+#                 (default matches vitest's "Tests N passed" and this kit's "CHECKS TOTAL: N")
+#   PROGRESS      the agent's memory file                                  (PROGRESS.md)
+#   HANDOFF       1 = when a session ends without ticking its task, append its last
+#                 message to PROGRESS so the next session inherits the context (1)
 #   TASKS, PROMPT task file / prompt file                            (TASKS.md / PROMPT.md)
 #
 # Exit codes: 0 all tasks done, 1 setup problem, 2 max iterations, 3 stuck, 4 repeated duds.
@@ -36,8 +40,12 @@ DUD_LIMIT=${DUD_LIMIT:-3}
 ON_RED=${ON_RED:-keep}
 TASKS=${TASKS:-TASKS.md}
 PROMPT=${PROMPT:-PROMPT.md}
-CHECK_CMD=${CHECK_CMD:-make -s check}
-TEST_COUNT_RE=${TEST_COUNT_RE:-CHECKS TOTAL: [0-9]+}
+if [[ -z "${CHECK_CMD:-}" ]]; then
+  if [[ -f Makefile ]]; then CHECK_CMD="make -s check"; else CHECK_CMD="npm run -s check"; fi
+fi
+TEST_COUNT_RE=${TEST_COUNT_RE:-Tests +[0-9]+ passed|CHECKS TOTAL: [0-9]+}
+PROGRESS=${PROGRESS:-PROGRESS.md}
+HANDOFF=${HANDOFF:-1}
 RUN=${RUN:-}
 
 RUN_ID=$(date +%Y%m%d-%H%M%S)
@@ -75,6 +83,25 @@ session_stats() {
     from message m join session s on s.id = m.session_id
     where s.title = '$title' and json_extract(m.data,'\$.role') = 'assistant';" 2>/dev/null \
     || printf -- '-\t-\t-\t-\t-\t-\n'
+}
+
+# A session that ends without ticking its task often leaves its best notes in its
+# final message (e.g. after hitting the step cap, tools are disabled and it cannot
+# write PROGRESS itself). Append that message so the next session inherits it.
+# Only works with the default opencode runner (reads its session DB).
+handoff_note() {   # $1 = session title, $2 = iteration, $3 = status
+  (( HANDOFF )) || return 0
+  command -v sqlite3 >/dev/null && [[ -f "$DB" ]] || return 0
+  local txt
+  txt=$(sqlite3 "$DB" "select json_extract(p.data,'\$.text') from part p join session s on s.id = p.session_id
+        where s.title = '$1' and json_extract(p.data,'\$.type') = 'text' order by p.time_created desc limit 1;" 2>/dev/null | head -c 6000)
+  (( ${#txt} >= 200 )) || return 0
+  {
+    printf '\n- **Handoff captured by loop.sh — iteration %s ended without ticking its task (tree: %s). The session'"'"'s last message, verbatim:**\n\n' "$2" "$3"
+    printf '%s\n' "$txt" | sed 's/^/  > /'
+    printf '\n'
+  } >> "$PROGRESS"
+  log "iteration $2: captured the session's last message (${#txt} chars) into $PROGRESS for the next session"
 }
 
 # One session, killed after ITER_TIMEOUT. Output streams to the terminal and to logs.
@@ -164,7 +191,7 @@ for ((i = 1; i <= MAX; i++)); do
   else
     duds=0
     if [[ $status == green ]]; then (( greens++ )); else (( reds++ )); fi
-    if (( no_progress )); then (( stuck++ )); else stuck=0; fi
+    if (( no_progress )); then (( stuck++ )); handoff_note "$title" "$i" "$status"; else stuck=0; fi
   fi
   (( iterations++ )); (( total_time += elapsed ))
   [[ $status == green ]] && prev_tests=$tests   # baseline only advances on a clean green
