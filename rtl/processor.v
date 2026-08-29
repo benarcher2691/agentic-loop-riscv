@@ -9,9 +9,10 @@
 //                it in, the register read ports sample rs1/rs2, and instr,
 //                rs1Val, rs2Val are latched on the edge leaving this state.
 //   EXECUTE      the ALU (combinational on the latched operands) writes back
-//                and PC <= PC + 4. Jumps/branches/loads/stores/LUI/AUIPC are
-//                still NOPs that advance PC. isSYSTEM (EBREAK) halts: state
-//                and PC stay put.
+//                and PC <= PC + 4. JAL/JALR write the link PC + 4 and set
+//                PC to their target instead. Branches/loads/stores/LUI/AUIPC
+//                are still NOPs that advance PC. isSYSTEM (EBREAK) halts:
+//                state and PC stay put.
 //
 // x0 always reads 0 (read mux; writes to rd 0 are dropped). The x1 output
 // mirrors RegisterBank[1] through a register written on the same edge with
@@ -62,11 +63,15 @@ module Processor (
         .Uimm     (Uimm),      .Jimm     (Jimm)
     );
 
-    // Part 2 write path: every ALU-reg and ALU-imm instruction. The second
-    // operand is rs2 for isALUreg and Iimm for isALUimm. funct7[5] selects
-    // SUB only for register ADD and SRA for both shift forms; for the other
+    // Part 3 write path: JAL/JALR write the link address PC + 4 and
+    // redirect the PC. JAL adds Jimm; JALR adds Iimm to the latched rs1
+    // value and clears bit 0 as the spec requires. funct7[5] selects SUB
+    // only for register ADD and SRA for both shift forms; for the other
     // immediate ops (notably ADDI) instr[30] is an immediate bit and must
     // not reach the ALU.
+    wire        doJump  = isJAL | isJALR;
+    wire [31:0] jumpTarget = isJAL ? (PC + Jimm)
+                                   : ((rs1Val + Iimm) & ~32'h00000001);
     wire        useAlu = isALUreg | isALUimm;
     wire [31:0] aluIn2 = isALUreg ? rs2Val : Iimm;
     wire        aluF75 = isALUreg ? funct7[5] :
@@ -85,8 +90,8 @@ module Processor (
         .LTU      (aluLTU)
     );
 
-    wire        wrEn   = useAlu;
-    wire [31:0] wrData = aluOut;
+    wire        wrEn   = useAlu | doJump;
+    wire [31:0] wrData = doJump ? (PC + 32'd4) : aluOut;
 
     assign mem_addr  = PC;
     assign mem_rstrb = (state == FETCH_INSTR);
@@ -116,7 +121,7 @@ module Processor (
                             RegisterBank[rdId] <= wrData;
                         if (wrEn && rdId == 5'd1)
                             x1 <= wrData;      // mirror of RegisterBank[1]
-                        PC    <= PC + 32'd4;
+                        PC    <= doJump ? jumpTarget : (PC + 32'd4);
                         state <= FETCH_INSTR;
                     end
                 end
