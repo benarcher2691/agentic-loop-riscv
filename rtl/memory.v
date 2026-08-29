@@ -1,9 +1,9 @@
 `default_nettype none
-// 1 KB word-accessed memory: program ROM and data RAM. mem_addr is a byte
-// address; mem_addr[9:2] selects the 32-bit word. The read is synchronous
-// and gated by mem_rstrb: when the strobe is low, mem_rdata holds its
-// previous value. Writes are synchronous with per-byte enables: only the
-// lanes whose mem_wmask bit is high take mem_wdata's byte.
+// 6 KB word-accessed memory: program ROM and data RAM. mem_addr is a byte
+// address; mem_addr[12:2] selects the 32-bit word (1536 words). The read is
+// synchronous and gated by mem_rstrb: when the strobe is low, mem_rdata
+// holds its previous value. Writes are synchronous with per-byte enables:
+// only the lanes whose mem_wmask bit is high take mem_wdata's byte.
 module Memory (
     input  wire        clk,
     input  wire [31:0] mem_addr,
@@ -12,7 +12,7 @@ module Memory (
     input  wire [31:0] mem_wdata,
     input  wire [3:0]  mem_wmask
 );
-    reg [31:0] MEM [0:255];
+    reg [31:0] MEM [0:1535];
 
     // ROM program: the hardware demo. Prints "Loop RISC-V\n" over the UART
     // (byte loads from the message at word 30, busy-wait on the status word
@@ -76,11 +76,11 @@ module Memory (
     end
 
     always @(posedge clk) begin
-        if (mem_rstrb)    mem_rdata <= MEM[mem_addr[9:2]];
-        if (mem_wmask[0]) MEM[mem_addr[9:2]][ 7: 0] <= mem_wdata[ 7: 0];
-        if (mem_wmask[1]) MEM[mem_addr[9:2]][15: 8] <= mem_wdata[15: 8];
-        if (mem_wmask[2]) MEM[mem_addr[9:2]][23:16] <= mem_wdata[23:16];
-        if (mem_wmask[3]) MEM[mem_addr[9:2]][31:24] <= mem_wdata[31:24];
+        if (mem_rstrb)    mem_rdata <= MEM[mem_addr[12:2]];
+        if (mem_wmask[0]) MEM[mem_addr[12:2]][ 7: 0] <= mem_wdata[ 7: 0];
+        if (mem_wmask[1]) MEM[mem_addr[12:2]][15: 8] <= mem_wdata[15: 8];
+        if (mem_wmask[2]) MEM[mem_addr[12:2]][23:16] <= mem_wdata[23:16];
+        if (mem_wmask[3]) MEM[mem_addr[12:2]][31:24] <= mem_wdata[31:24];
     end
 endmodule
 `default_nettype wire

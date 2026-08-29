@@ -23,7 +23,7 @@ module SOC #(
 
     // ---- IO space decode -------------------------------------------------
     // mem_addr[22] is only ever set by a load/store (the fetch address is a
-    // 10-bit PC, zero-extended). A store pulse is |mem_wmask, which the
+    // 13-bit PC, zero-extended). A store pulse is |mem_wmask, which the
     // Processor gates to the store's EXECUTE cycle — exactly one clk edge
     // per store, with mem_addr = the effective address.
     wire ioSel    = mem_addr[22];

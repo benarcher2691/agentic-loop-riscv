@@ -97,7 +97,7 @@ module Processor (
     wire        useAlu = isALUreg | isALUimm;
     // AUIPC and LUI both run through the ALU (in1 = PC resp. 0, in2 =
     // Uimm, funct3 forced to ADD) so the separate PC+immediate adder only
-    // serves JAL/branch targets, which use 10 bits — see below, and the
+    // serves JAL/branch targets, which use 13 bits — see below, and the
     // writeback mux has no Uimm arm (LUI's 0 + Uimm = Uimm falls through
     // to aluOut). Branches compare rs2, stores add Simm, everything else
     // adds Iimm.
@@ -127,25 +127,26 @@ module Processor (
         .LTU      (aluLTU)
     );
 
-    // Sequential PC arithmetic is 10-bit: the memory is 1 KB, so only
-    // PC[9:0] is ever architecturally visible (PC is stored 32-bit with
+    // Sequential PC arithmetic is 13-bit: the memory is 6 KB, so only
+    // PC[12:0] is ever architecturally visible (PC is stored 32-bit with
     // high zeros — the benches read it as a 32-bit value). This keeps the
-    // +4 adder and the next-PC mux at 10 bits; the JAL/JALR link (also
-    // PC + 4) shares the same 10-bit sum, zero-extended.
-    wire [9:0] pc10    = PC[9:0];
-    wire [9:0] pcPlus4 = pc10 + 10'd4;
+    // +4 adder and the next-PC mux at 13 bits; the JAL/JALR link (also
+    // PC + 4) shares the same 13-bit sum, zero-extended.
+    wire [12:0] pc13    = PC[12:0];
+    wire [12:0] pcPlus4 = pc13 + 13'd4;
 
     // One shared PC+immediate adder serves JAL's target and the branch
     // target — the two classes are mutually exclusive, so a mux in front
     // of the adder picks the immediate. AUIPC now goes through the ALU
-    // (see aluIn1/aluIn2 above), which lets this adder shrink to 10 bits:
-    // JAL/branch targets only use the low 10 bits (1 KB memory), and the
-    // PC update below always took pcPlusImm[9:0] anyway. JALR reuses the
-    // ALU's ADD (its funct3 is 000 and aluIn2 is Iimm) and clears bit 0.
-    wire [9:0] pcImm10      = isJAL ? Jimm[9:0] : Bimm[9:0];
-    wire [9:0] pcPlusImm10  = pc10 + pcImm10;
-    wire [31:0] jumpTarget  = isJAL ? {22'b0, pcPlusImm10}
-                                    : (aluOut & ~32'h00000001);
+    // (see aluIn1/aluIn2 above), which lets this adder stay narrow:
+    // JAL/branch targets only use the low 13 bits (6 KB memory), and the
+    // PC update below always took the sum's low bits anyway. JALR reuses
+    // the ALU's ADD (its funct3 is 000 and aluIn2 is Iimm) and clears
+    // bit 0.
+    wire [12:0] pcImm13      = isJAL ? Jimm[12:0] : Bimm[12:0];
+    wire [12:0] pcPlusImm13  = pc13 + pcImm13;
+    wire [31:0] jumpTarget   = isJAL ? {19'b0, pcPlusImm13}
+                                     : (aluOut & ~32'h00000001);
 
     wire        wrEn   = useAlu | doJump | isLUI | isAUIPC;
     // Byte/halfword selection of the loaded word. The lane comes from
@@ -189,7 +190,7 @@ module Processor (
     // (doJump/isLUI/isAUIPC) are garbage — a loaded 0xDEADBEEF decodes as
     // JAL and would otherwise write back PC + 4 instead of the data.
     wire [31:0] wrData = ldState ? ldExt :
-                         doJump  ? {22'b0, pcPlus4} :
+                         doJump  ? {19'b0, pcPlus4} :
                                    aluOut;
     // One register-file write port for both writeback states: the decoder
     // is only valid in EXECUTE, the latched load bookkeeping in LOAD.
@@ -201,14 +202,16 @@ module Processor (
     // keeps holding the loaded word. During EXECUTE of a store the same
     // address mux carries the store target; the write is committed by the
     // memory on the edge that leaves EXECUTE, so stores need no wait
-    // state. The fetch side only needs the 10-bit PC, but loads/stores
-    // present the full effective address up to bit 22: the SOC decodes
-    // address bit 22 as IO space (SOC gates the RAM off for those
-    // cycles), so the load/store half of the mux is 23 bits wide.
+    // state. The fetch side only needs the 13-bit PC. Loads/stores
+    // present the effective address, of which only 14 bits are consumed:
+    // bit 22 (the SOC's IO-space select) and bits [12:0] (the 6 KB RAM
+    // word index [12:2] plus the IO word-offset bits [5:2]) — bits
+    // [21:13] drive nothing, so the mux is 14 bits wide, not 23.
     wire loadRead   = isLoad & (state == EXECUTE);
     wire storeWrite = isStore & (state == EXECUTE);
-    assign mem_addr  = (loadRead | storeWrite) ? {9'b0, aluOut[22:0]}
-                                               : {22'b0, pc10};
+    assign mem_addr  = (loadRead | storeWrite)
+                                ? {9'b0, aluOut[22], 9'b0, aluOut[12:0]}
+                                : {19'b0, pc13};
     assign mem_rstrb = (state == FETCH_INSTR) | loadRead;
 
     // Store data and byte enables. The addressed lane is selected by the
@@ -255,8 +258,8 @@ module Processor (
     end
     wire        doBranch     = isBranch & branchCond;
     // Bench-visible alias of the shared adder's result (pure wiring; the
-    // 10-bit sum zero-extended — benches only check small positive targets).
-    wire [31:0] branchTarget = {22'b0, pcPlusImm10};
+    // 13-bit sum zero-extended — benches only check small positive targets).
+    wire [31:0] branchTarget = {19'b0, pcPlusImm13};
 
     always @(posedge clk) begin
         if (!resetn) begin
@@ -296,9 +299,9 @@ module Processor (
                             RegisterBank[wrReg] <= wrData;
                         if (doWrite && wrReg == 5'd1)
                             x1 <= wrData;      // mirror of RegisterBank[1]
-                        PC    <= doJump    ? {22'b0, jumpTarget[9:0]} :
-                                 doBranch  ? {22'b0, pcPlusImm10} :
-                                             {22'b0, pcPlus4};
+                        PC    <= doJump    ? {19'b0, jumpTarget[12:0]} :
+                                 doBranch  ? {19'b0, pcPlusImm13} :
+                                             {19'b0, pcPlus4};
                         state <= FETCH_INSTR;
                     end
                 end
@@ -311,7 +314,7 @@ module Processor (
                         RegisterBank[wrReg] <= wrData;
                     if (doWrite && wrReg == 5'd1)
                         x1 <= wrData;      // mirror of RegisterBank[1]
-                    PC    <= {22'b0, pcPlus4};
+                    PC    <= {19'b0, pcPlus4};
                     state <= FETCH_INSTR;
                 end
                 default: state <= FETCH_INSTR;
