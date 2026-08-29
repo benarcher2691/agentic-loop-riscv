@@ -8,6 +8,7 @@ DEVICE   ?= hx1k
 PACKAGE  ?= tq144
 PCF      ?= boards/icestick.pcf
 FREQ_MHZ ?= 12
+LC_BUDGET?= 900
 BUILD    := build
 RTL      := $(sort $(wildcard rtl/*.v))
 TBS      := $(sort $(wildcard tb/*_tb.v))
@@ -57,6 +58,8 @@ stat: $(BUILD)/$(TOP).asc
 	@echo "=== stat"
 	@grep -E 'ICESTORM_(LC|RAM):\s+[0-9]+/' $(BUILD)/pnr.log | tail -2 | sed 's/^.*Info: *//'
 	@grep -E 'Max frequency' $(BUILD)/pnr.log | tail -1 | sed 's/^.*Info: *//'
+	@lc=$$(grep -oE 'ICESTORM_LC: +[0-9]+/' $(BUILD)/pnr.log | tail -1 | grep -oE '[0-9]+'); \
+	  test "$${lc:-0}" -le $(LC_BUDGET) || { echo "FAIL: $$lc logic cells exceeds LC_BUDGET=$(LC_BUDGET) (see TASKS.md 'Shrink the core')"; exit 1; }
 
 # --- hardware (human only; denied to the loop agent in opencode.json)
 prog: $(BUILD)/$(TOP).bin

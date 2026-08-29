@@ -58,4 +58,4 @@ meaningful change. If it is red when you start, fixing it is your first task.
 - Do not edit `Makefile`, `loop.sh`, `PROMPT.md`, `AGENTS.md`, `boards/`, `lib/`, `rtl/emitter_uart.v`, or anything under `.opencode/`.
 - **Never run `iceprog`, `make prog`, or `make uart`.** Hardware is a human step. You cannot see LEDs; trust the benches and the pnr report.
 - Do not rewrite files that already work. Make focused edits. Keep earlier benches passing.
-- Resource awareness: `make stat` prints logic-cell usage and Fmax. The finished SoC should stay well under the 1280-cell part; the CPU core alone should be a few hundred cells.
+- Resource budget: `make stat` prints logic-cell usage and Fmax and **fails above `LC_BUDGET` (900)** — the part has 1280 and the UART/IO need headroom. Share adders and shifters; do not add a comparator or adder where an existing one can be muxed.
