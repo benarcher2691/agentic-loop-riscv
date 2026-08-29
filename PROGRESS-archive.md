@@ -574,3 +574,70 @@
    range before hierarchical checks. (5) The echo2 bench task needs fork/join: the first echo's
    start edge lands mid-stop of the incoming frame, a sequential recv misses it.
 
+- **Monitor command protocol** (phase 3, task 2): ECHO2 replaced by the command loop
+   (V/W/R/G/unknown). Key trick: GET32/PUT32 assemble/disassemble words through an 8-byte
+   stack frame (ra at sp+4, scratch word at sp+0) using SB/LBU — no shifter, no OR needed,
+   and the frame is collision-free by construction. MAIN re-establishes x5 every iteration
+   and the G arm again after JALR (a G routine may clobber all but sp). SOC: the LED word
+   at 0x400004 is now readable as the ioRdata *default* arm ({27'd0, ledReg}) — cheaper than
+   a dedicated decode; ledReg's declaration had to move ABOVE the read-path always block
+   (iverilog elaboration binds uses to declarations in source order). Benches: monitor_tb
+   (111) drives the full matrix incl. a G-uploaded 10-word sum routine (assembled in the
+   bench via the lib — the bench array MUST be named MEM) and a post-G survival V; the
+   monitor_io_tb rewrite spies PUT32's live sp-dip to 0x17F8 with a `wait` in a fork arm;
+   soc_tb's three-way ROM cross-check regenerated from an independent python encoder
+   (scratch, not committed) — surprise: the lib's LUI takes the FINAL 32-bit value
+   (0x00400000 → 0x004002B7), my encoder's first cut passed the imm20 field and got
+   0x400002B7; the three-way check caught it exactly as designed. 14766 → 15059 checks.
+   Budget: 1149/1150 unflattened — the LEDS-read arm (+6 on SOC 52→58) was fully absorbed
+   by abc run-to-run noise (Processor 501→497, Memory 120→119 with ROM-only changes);
+   pnr 1136/1280, 37.72 MHz, equiv clean, 16 BRAM.
+   Advice for the next task (hwprogs): it should be bench-only (no RTL edits), which matters
+   because there is exactly ONE LUT4 of headroom — if you must touch rtl/, run a scratch
+   yosys ablation first. The monitor protocol is stable: uploaded code must use relative
+   branches only (G jumps to an absolute address, fine), W writes bytes with SB (note: every
+   byte lane of the LED word hits the ledReg latch, so write it with len=1, not 4), R has no
+   reply byte, W/G reply K, unknown replies '?'. The deterministic idle state is PC 348..363
+   with sp=0x1800/ra=48 — poll that range before hierarchical checks. The exchange helper
+   needs fork/join (a reply's start bit can land mid-stop of the last command byte).
+
+- **Handoff captured by loop.sh — iteration 4 ended without ticking its task (tree: green). The session's last message, verbatim:**
+
+  > "Read AGENTS.md and follow its workflow for exactly ONE task.
+  > 
+  > Steps:
+  > 1. `make check` — if red, fix first.
+  > 2. Open TASKS.md. Take the first `- [ ]` task. Read PROGRESS.md for notes from earlier sessions.
+  > 3. **Act, do not plan.** Right after reading the task, your very next tool call creates the bench file with its first two or three checks and a `make sim` run. Do not design the whole task in your head first; grow the bench and the RTL in small steps, running `make sim` after each (it takes seconds). Think in files, not in thoughts.
+  > 4. Keep going until `make check` is green. Read build/*.log on failure.
+  > 5. Tick the task in TASKS.md, append to PROGRESS.md, commit.
+  > 6. Stop.
+  > 
+  > If every task in TASKS.md is already checked, reply with the single line
+  > `ALL TASKS DONE` and do nothing else."
+  > `make check` is green (15059 checks, pnr fits). First unchecked task: **Exportable hardware test programs** (`tb/hwprogs_tb.v`). Let me read PROGRESS.md and the existing monitor bench to reuse its models.
+  > Now let me check the Makefile and check.vh to understand bench integration.
+
+- **Exportable hardware test programs** (phase 3, task 3): bench-only, as advised — budget untouched
+   (1149/1150). `tb/hwprogs_tb.v` assembles 4 programs (alu/ldst/fibgcd/jumpbr) into one shared `MEM`
+   sequentially (memPC reset between), uploads each at 0x400 with W, runs with G, reads the 0x800
+   result block (signature 0x600D0000|idx + results) with R, checks every word against independent
+   expectations (Verilog ops for alu/jumpbr, byte-lane slicing of a fixed pattern for ldst, reference
+   loops pinned to hand constants 610/21/6 for fibgcd). Exports build/hwprogs-<name>.prog.hex /
+   .expect.hex — $system is NOT available in this iverilog, so per the task's fallback the files land
+   directly in build/; iverilog's $writememh writes `// 0xNNNNNNNN` address comments every 16 words,
+   the host tool must skip them. Surprises/advice: (1) lib store operand order is ASSEMBLY order —
+   SW/SB/SH(data, base, imm), loads LW(rd, base, imm); (2) label discovery: gate the UART sequence on
+   the lib's ASMerror, else the bench executes garbage-offset code, G never returns, and the sim
+   burns the whole watchdog (>120 s wall); (3) for data addresses inside a relocated program use
+   AUIPC(x,0) + ADDI(x, x, LabelRef(L) + 4) — LabelRef is relative to the ADDI's own address — and
+   NEVER feed LI a label-dependent value (its 1-vs-2-word expansion differs between the X-label
+   discovery run and the final run, shifting every later label); (4) the jumpbr tests use a uniform
+   literal-offset pattern (BR +12 skips the not-taken marker, JAL x0,+8 skips the taken marker) so
+   the whole program needs zero labels, and B-type encodings are checked via a 6-word "probe"
+   assembly (never uploaded) at fixed MEM[0..5]; (5) odd-offset LH/LHU read the LOW half and SH
+   writes lanes {addr[1], addr[1]+1} (lane from addr[1] only) — now pinned by the exported ldst
+   program too; (6) my BLT hand constant was wrong once (branch offset is from the branch's own
+   address, not the label's) — the three-way check caught it. 15059 → 15635 checks in 18 benches;
+   pnr 1136/1280, 37.72 MHz, equiv clean.
+

@@ -48,9 +48,17 @@ module SOC #(
     wire uartTx;
 
     // UART receiver (host -> FPGA). rxAvail is the "unread byte pending"
-    // flag: set when the receiver completes a byte, cleared when software
-    // reads the RX word. Set-priority over the read-clear so a byte that
-    // completes exactly on the read cycle is not lost.
+    // flag. Overrun policy: LAST-WRITER-WINS — a byte that completes while
+    // an earlier byte is still unread overwrites uartRxData and re-sets
+    // rxAvail; the earlier byte is gone. The host must therefore throttle:
+    // send at most one byte, then wait until software has read the RX word
+    // (avail clears) before sending the next — the monitor's GETBYTE poll
+    // keeps up at 115200 baud, but nothing in hardware queues bytes.
+    // Set-priority over the read-clear: a byte completing exactly on the
+    // read cycle wins — that read returns the pre-completion avail bit
+    // (0), but rxAvail ends SET, so a follow-up read still delivers the
+    // completing byte; nothing is lost at the race (pinned by
+    // tb/rxoverrun_tb.v).
     wire       uartRxValid;
     wire [7:0] uartRxData;
     reg        rxAvail = 1'b0;
@@ -119,11 +127,18 @@ module SOC #(
     assign LEDS = ledReg;
 
     // UART transmitter. A data write is only accepted while the emitter is
-    // idle (o_ready); i_valid is then held until the emitter acknowledges by
-    // dropping o_ready — this also rides out the one cycle per bit where
-    // the emitter's internal shift fires and would swallow a single-cycle
-    // pulse. Writes while busy are dropped (software waits on the status
-    // word's busy bit).
+    // idle (o_ready); uartValid is then held until the emitter acknowledges
+    // by dropping o_ready — the standard valid/ready handshake, with the
+    // clear arm below as the acknowledge, so the byte is presented until
+    // taken and taken exactly once (the emitter loads i_data only on
+    // i_valid & o_ready). (An earlier comment claimed the hold also rides
+    // out the emitter's per-bit shift cycle; that is wrong — the shift
+    // branch fires only at bit-rate counter wraps, which happen only while
+    // busy (o_ready = 0) or at the wrap where o_ready rises (i_valid &
+    // o_ready already false there), and while idle the reload pins the
+    // counter's top bit to 0 — a load can never be swallowed.) Writes while
+    // busy are dropped (software waits on the status word's busy bit;
+    // pinned by tb/txbusy_tb.v).
     reg       uartValid = 1'b0;
     reg [7:0] uartData  = 8'd0;
     always @(posedge clk) begin

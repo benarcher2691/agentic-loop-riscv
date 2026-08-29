@@ -61,8 +61,11 @@ module io_tb;
 
   initial begin
     #1;   // the lib's `initial memPC = 0` has run
-    // NOTE: the lib's LUI/AUIPC take the FINAL rd value; its SRLI macro is
-    // buggy (encodes SRL by register, funct7 0) — use ANDI for the busy bit.
+    // NOTE: the lib's LUI/AUIPC take the FINAL rd value (not the imm20
+    // field). Its SRLI macro is fine (audit A16: the old "buggy SRLI"
+    // claim here was stale — RType with rs2 = imm[4:0] and funct7 0 is
+    // exactly the SRLI encoding); ANDI is used below simply to mask the
+    // status word's busy bit.
     LUI(x5, 32'h00400000);
     ADDI(x6, x0, 21);
     SW(x6, x5, 4);
