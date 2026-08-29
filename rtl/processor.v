@@ -5,9 +5,11 @@
 // Three-state machine, one instruction every three clk cycles:
 //   FETCH_INSTR  mem_rstrb high with mem_addr = PC; the memory returns the
 //                word one cycle later (synchronous read).
-//   FETCH_REGS   mem_rdata now holds the instruction: the Decoder input muxes
-//                it in, the register read ports sample rs1/rs2, and instr,
-//                rs1Val, rs2Val are latched on the edge leaving this state.
+//   FETCH_REGS   mem_rdata now holds the instruction (and keeps holding it
+//                through EXECUTE — the memory only updates while the fetch
+//                strobe is high): the Decoder decodes it live and the
+//                register read ports sample rs1/rs2, latching rs1Val/rs2Val
+//                on the edge leaving this state.
 //   EXECUTE      the ALU (combinational on the latched operands) writes back
 //                and PC <= PC + 4. JAL/JALR write the link PC + 4 and set
 //                PC to their target instead. LUI writes Uimm, AUIPC writes
@@ -32,7 +34,6 @@ module Processor (
 
     reg [1:0]  state = FETCH_INSTR;
     reg [31:0] PC    = 32'd0;
-    reg [31:0] instr;
     reg [31:0] rs1Val, rs2Val;
 
     reg [31:0] RegisterBank [0:31];
@@ -41,10 +42,9 @@ module Processor (
         for (i = 0; i < 32; i = i + 1) RegisterBank[i] = 32'd0;
     end
 
-    // Decoder input: the instruction word arrives from memory during
-    // FETCH_REGS; before and after that, the latched copy is used.
-    wire [31:0] dec_instr = (state == FETCH_REGS) ? mem_rdata : instr;
-
+    // Decoder input: the memory's synchronous read only updates while the
+    // fetch strobe is high, so mem_rdata holds the instruction word through
+    // FETCH_REGS and EXECUTE — no separate instruction register needed.
     wire isALUreg, isALUimm, isBranch, isJALR, isJAL, isAUIPC, isLUI, isLoad, isStore, isSYSTEM;
     wire [4:0]  rs1Id, rs2Id, rdId;
     wire [2:0]  funct3;
@@ -52,7 +52,7 @@ module Processor (
     wire [31:0] Iimm, Simm, Bimm, Uimm, Jimm;
 
     Decoder decoder (
-        .instr    (dec_instr),
+        .instr    (mem_rdata),
         .isALUreg (isALUreg),  .isALUimm (isALUimm), .isBranch (isBranch),
         .isJALR   (isJALR),    .isJAL    (isJAL),    .isAUIPC  (isAUIPC),
         .isLUI    (isLUI),     .isLoad   (isLoad),   .isStore  (isStore),
@@ -70,8 +70,6 @@ module Processor (
     // immediate ops (notably ADDI) instr[30] is an immediate bit and must
     // not reach the ALU.
     wire        doJump  = isJAL | isJALR;
-    wire [31:0] jumpTarget = isJAL ? (PC + Jimm)
-                                   : ((rs1Val + Iimm) & ~32'h00000001);
     // Branches compare rs1 vs rs2 through the ALU's dedicated compare
     // outputs (funct3-independent); funct3 only picks which comparison
     // decides the branch. The second ALU operand is therefore rs2 for
@@ -94,14 +92,22 @@ module Processor (
         .LTU      (aluLTU)
     );
 
+// One shared PC+immediate adder serves JAL's target, AUIPC's writeback
+    // and the branch target — the three classes are mutually exclusive, so
+    // a mux in front of the adder picks the immediate. JALR reuses the
+    // ALU's ADD (its funct3 is 000 and aluIn2 is Iimm) and clears bit 0.
+    wire [31:0] pcImm      = isJAL ? Jimm : isAUIPC ? Uimm : Bimm;
+    wire [31:0] pcPlusImm  = PC + pcImm;
+    wire [31:0] jumpTarget = isJAL ? pcPlusImm : (aluOut & ~32'h00000001);
+
     wire        wrEn   = useAlu | doJump | isLUI | isAUIPC;
     // LUI writes the immediate itself; AUIPC writes PC + Uimm (PC still
     // holds this instruction's address during EXECUTE). Jumps write the
     // link address PC + 4; everything else comes from the ALU.
     wire [31:0] wrData = doJump  ? (PC + 32'd4) :
-                          isLUI   ? Uimm :
-                          isAUIPC ? (PC + Uimm) :
-                                    aluOut;
+                         isLUI   ? Uimm :
+                         isAUIPC ? pcPlusImm :
+                                   aluOut;
 
     // Branch condition: funct3 selects among the ALU's EQ/LT/LTU and their
     // complements (BGE/BNE/BGEU). Branches write no rd — isBranch stays out
@@ -119,7 +125,8 @@ module Processor (
       endcase
     end
     wire        doBranch     = isBranch & branchCond;
-    wire [31:0] branchTarget = PC + Bimm;
+    // Bench-visible aliases of the shared adder's result (pure wiring).
+    wire [31:0] branchTarget = pcPlusImm;
 
     assign mem_addr  = PC;
     assign mem_rstrb = (state == FETCH_INSTR);
@@ -134,11 +141,13 @@ module Processor (
                     state <= FETCH_REGS;
                 end
                 FETCH_REGS: begin
-                    instr  <= mem_rdata;
                     // Register reads are synchronous (sampled at the edge
                     // leaving FETCH_REGS) so the bank can map to BRAM.
-                    rs1Val <= (rs1Id == 5'd0) ? 32'd0 : RegisterBank[rs1Id];
-                    rs2Val <= (rs2Id == 5'd0) ? 32'd0 : RegisterBank[rs2Id];
+                    // No x0 read mux needed: RegisterBank[0] is initialised
+                    // to 0 and writes to rd 0 are dropped below, so it can
+                    // only ever read as 0.
+                    rs1Val <= RegisterBank[rs1Id];
+                    rs2Val <= RegisterBank[rs2Id];
                     state  <= EXECUTE;
                 end
                 EXECUTE: begin
@@ -150,7 +159,7 @@ module Processor (
                         if (wrEn && rdId == 5'd1)
                             x1 <= wrData;      // mirror of RegisterBank[1]
                         PC    <= doJump    ? jumpTarget :
-                                 doBranch  ? branchTarget :
+                                 doBranch  ? pcPlusImm :
                                              (PC + 32'd4);
                         state <= FETCH_INSTR;
                     end
