@@ -31,6 +31,7 @@ meaningful change. If it is red when you start, fixing it is your first task.
 | `tb/check.vh` | `CHECK`, `CHECK_EQ`, `DONE`, `WATCHDOG` macros. Include it inside the bench module. |
 | `lib/riscv_assembly.v` | Provided Verilog-macro RISC-V assembler (do not edit). `include` it **inside** a module that declares `reg [31:0] MEM [0:N]`. Do not read the whole file (800 lines): `head -60 lib/riscv_assembly.v` shows the usage; macros are the instruction names with RISC-V operand order (`ADD(rd,rs1,rs2)`, `ADDI(rd,rs1,imm)`, `LW(rd,rs1,imm)`, `SW(rs2,rs1,imm)`, `BEQ(rs1,rs2,imm)`, `JAL(rd,imm)`, `LUI(rd,imm)`, `EBREAK()`), registers are `x0`..`x31`, `Label(L)`/`LabelRef(L)` need `integer L;`, finish with `endASM();`. |
 | `build/` | Generated. Logs: `build/<bench>.log`, `build/lint.log`, `build/synth.log`, `build/pnr.log`. |
+| `PROGRESS-archive.md`, `TASKS-done.md` | Older progress entries and completed tasks, rotated out by the loop to keep your reading short. Do not read them unless a task or a note points you there. |
 
 ## Verilog rules (synthesizable code in `rtl/`)
 

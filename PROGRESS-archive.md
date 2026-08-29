@@ -1,0 +1,349 @@
+# Progress archive (rotated out of PROGRESS.md by loop.sh; oldest first)
+
+- **Blinker** (task 1): Added `Clockworks` (generate-if: SLOW=0 passthrough, else SLOW-bit
+  counter, clk = MSB; POR = 5-bit counter sticking at 16, resetn = bit 4) and the SOC 5-bit
+  LED counter. Benches check edge-by-edge: 95 + 88 = 183 checks, pnr 36 LCs, Fmax 424 MHz.
+  Surprise: none — but note `$time` rounds to the 1 ns timescale unit, so the SLOW=3 spacing
+  check compares *sample indices* (8 edges apart), not timestamps. Next: Memory task needs a
+  synchronous-read BRAM and the assembler macros; read `lib/riscv_assembly.v` header first.
+
+- **LED patterns from ROM** (task 2): Added `Memory` (256x32, sync read gated by `mem_rstrb`,
+  16-word LED pattern in `initial`) and reworked `SOC` into a fetch machine: `PC` walks
+  0..60 by 4 (wrap via `PROG_WORDS` localparam = 16, must match `rtl/memory.v`), LEDS =
+  `mem_rdata[4:0]`. 254 checks total (95+88+71), 91 LCs, 1 BRAM, Fmax 221 MHz.
+  Surprises: (1) iverilog needs `reg PC` declared *before* the `Memory` instance that uses
+  it ("declaration after use" is a hard elaboration error); (2) yosys narrows `mem_rdata`
+  to the 5 bits LEDS uses, so the ROM maps to ONE 256x16 RAM4K (INIT_0 only) — expect 2
+  BRAMs once the Processor reads full 32-bit words; (3) word 0 displays for 17 edges
+  (16 reset + 1) because PC is held at 0 through POR while the strobe is tied high — the
+  soc_tb pass loop starts sampling after edge 17. Benches keep independent copies of the
+  16 ROM constants, cross-checked against `dut.memory.MEM[i]` (note the instance path).
+
+- **Decoder, part 1** (task 3): `rtl/decoder.v` already existed complete from the interrupted
+  session (all 10 class flags, fields, AND all five immediates already implemented) — verified
+  it, did not rewrite it. New `tb/decoder_tb.v`: table-driven `check_vec` task, 10 hand-encoded
+  vectors (one per class) × 15 checks + 1 illegal-opcode check = 151 checks, 405 total.
+  Surprise: in I/S/B/U/J formats rs2/rd/funct7 overlap immediate bits, so expected values are
+  raw instruction bits (addi x1,x0,5 → rs2Id=5; ebreak → rs2Id=1; jal x1,16 → rs2Id=16;
+  lui → rs1=rs2=31, funct7=127). Next (part 2): immediates are already driven — bench-only
+  work; extend `check_vec` with the five expected immediates per vector and add the task's
+  positive/negative I/S/U vectors.
+
+- **Decoder, part 2** (task 4): bench-only again (decoder already drove all five immediates).
+  `check_vec` now takes eI/eS/eB/eU/eJ and checks all five immediate outputs on every vector;
+  14 vectors (added addi -1, lw -8, sw +16, lui 0x12345 for bit-31-clear U) × 20 checks + 1
+  illegal = 281, total 535. New hand encodings: lw x3,-8(x2) = 0xFF812183, sw x2,16(x1) =
+  0x0020A823. Surprise: hand bit-slicing kept misaligning (nibble→bit-index slips), so the
+  expected constants were computed by applying the spec formulas to the hand-encoded words
+  with a throwaway python bit-slicer, anchored against the task text's own named values
+  (Iimm=-1, Simm=-4, Uimm=0xFFFFF000, Jimm=16, Bimm=8, Iimm=64) and part-1's field checks —
+  all matched, and sim passed first run. Advice: for part 3, reuse the same python slicer to
+  pre-compute B/J immediate expectations, then do the assembler round-trip (RType..JType from
+
+- **Decoder, part 3** (task 5): bench-only again. Added 5 hand vectors (fwd bne +16, back bne -8
+  and beq -8 = 0xFE209CE3/0xFE208CE3, back jal x0,-8 = 0xFF9FF06F, edge jal x1,4094 = 0x7FF000EF
+  with imm[11]=1/imm[20]=0) + assembler round trip: `reg [31:0] MEM[0:15]` + lib include at
+  module level, six RType..JType calls, each word first CHECK_EQ'd against the hand encoding,
+  then run through check_vec. 761 checks total, pnr unchanged (91 LCs).
+  Surprises: (1) the "jal x1,2046" word I first built was really jal x1,4094 — 0x7FF000EF has
+  imm[11]=1; kept it as the swap-edge test; (2) two FAILs from transcribing funct3=000 for
+  0xFF9FF06F where bits[14:12]=111 — the python slicer had it right, I overrode it by eye.
+   Advice: trust the slicer output verbatim, never re-derive fields by hand. The lib include
+   resolves via the Makefile's `-I lib`; it needs `MEM` + brings its own `memPC` (assign it
+   before generating). Next task is the ALU (rtl/alu.v) — first new RTL module since Memory.
+
+- **ALU** (task 6): `rtl/alu.v` (full funct3/funct7_5 decode, shift amount in2[4:0], SLT/SLTU
+  reuse the EQ/LT/LTU output wires so the two paths cannot disagree) + `tb/alu_tb.v`:
+  hand-anchored literal checks (overflow wrap, SRA sign fill, signed-vs-unsigned on
+  0x80000000), 5×5 edge-value sweep × all 10 op variants, explicit shift amounts
+  0/1/2/4/16/31 × SLL/SRL/SRA × 5 edge values, 256 seeded `$random` vectors — 2438 checks,
+  3199 total, pnr unchanged (91 LCs).
+   Surprise: iverilog evaluates `$signed(a) >>> sh` *inside an unsigned ternary* as a logical
+   shift (the ?: context wins over the operand's signedness) — both initial FAILs were my
+   reference doing SRL where the DUT was correct. Fix: compute the reference SRA in a
+   standalone assignment. Advice: the Processor should drive ALU.funct7_5 from
+   `instr[30]`/funct7 bit 5 and take branch operands straight from EQ/LT/LTU; expect the LC
+   count to jump next session since yosys currently discards the unused ALU.
+
+- **Processor, part 1** (task 7): `rtl/processor.v` — 3-state FSM, 3 cycles/instr; Decoder
+   input muxes `mem_rdata` in during FETCH_REGS (that is how "read rs1/rs2 in FETCH_REGS"
+   works with a sync memory); register reads are synchronous (latched into rs1Val/rs2Val) so
+   RegisterBank maps to BRAM (synth log: "mapping memory SOC.processor.RegisterBank via
+   $__ICE40_RAM4K_"). The `x1` output is a same-edge mirror register, NOT
+   `assign x1 = RegisterBank[1]` — an async read would drag the regfile back to ~1000 LCs of
+   FFs+muxes. SOC = Processor+Memory at SLOW=0, LEDS = x1[4:0]; Memory's ROM is now a 6-word
+   ADDI program via the assembler tasks (yosys resolves `../lib/riscv_assembly.v` from rtl/).
+   Benches: new processor_tb (117: per-cycle strobe/PC walk, halt freeze, reg checks,
+   hand-encoding cross-check), memory_tb rewritten (ROM copy + bench-filled words 6..255,
+   full 256-word addressing, 1038 checks), soc_tb rewritten (62). 4257 total, 139 LCs,
+   2 BRAMs, Fmax 118 MHz.
+   Surprises: (1) lib LUI/AUIPC take the FINAL rd value — UType stores imm[31:12]; the lib
+   header's "pre-shifted constant" note is stale; (2) my addi x3,x2,-3 hand word was ...193,
+   not ...793 (3<<7 = 0x180) — the assembler cross-check caught both of my hand-encoding
+   slips, DUT was right both times; (3) bench signals must not be named x0..x31 (lib
+   localparam clash); (4) forgot x1's init value → LEDS was X during reset, soc_tb's
+   4-state CHECK_EQ caught it. Advice for part 2: keep register reads sync, keep the x1
+   mirror's write condition general (`wrEn && rdId == 1`), and expect LCs to grow as the
+   SOC program starts writing more registers (each written reg ≈ +5 observable FFs).
+
+- **Processor, part 2** (task 8): ALU wired into EXECUTE — `aluIn2 = isALUreg ? rs2Val : Iimm`,
+   `aluF75 = isALUreg ? funct7[5] : (isALUimm && funct3==101) ? funct7[5] : 0` (ADDI with
+   imm[30]=1 must stay ADDI; regression: `ADDI x14,x0,1024`), `wrEn = isALUreg|isALUimm`,
+   `wrData = aluOut`. Bench: 27-word program covering every ALU-reg/ALU-imm op once with
+   hand-computed results (SRAI of -7, SLTIU -1, SUB negative, SLLI 31, SRL by 33 → amount
+   [4:0]), part-1's per-cycle FSM walk kept for the first 9 instructions then free-run to
+   the EBREAK halt; 131 checks, 4271 total. LCs 139 → 771 (60%), BRAMs 2 → 5 (regfile now
+   3 RAM4K: 2 sync read ports + write), Fmax 56.76 MHz.
+   Surprises: (1) my python encoder passed `hi=1 << 25` for SRAI instead of funct7 0x20 —
+   the lib's 0x4042D893 was right; "trust the script" cuts both ways, check the script
+   against the spec formula too; (2) 5<<31 = 0x80000000, not 0xA0000000 (that's 5<<29) —
+   DUT right, my mental math wrong, the check caught it; (3) the ALU's three separate
+   barrel shifters (SLL/SRL/SRA arms) are likely the bulk of the 771 LCs — if later tasks
+   squeeze the part, share one shift core before touching anything else. Advice for JAL/
+   JALR: the wrEn/wrData path is ready for `rd <= PC+4`; add a PC-source mux in EXECUTE
+   and remember rs1Val is already latched for JALR's target.
+
+- **Jumps: JAL and JALR** (task 9): iteration 9 had already put the jump path in
+   processor.v (doJump/jumpTarget, wrData = PC+4) and left a WIP bench that an auto-commit
+   captured; I replaced that bench with tb/jumps_tb.v (58 checks) — same acceptance
+   criteria plus `jumpTarget` wire checks and a per-cycle walk of the first JAL. Program:
+   forward JAL x0 over two poison words, a subroutine at addr 12 called twice by backward
+   JALs (x1 = 28/36) returning through JALR x0,x1,0, and a two-iteration loop whose JALR
+   return self-retargets (x7 seed 42, +4 per pass, return (x7-1)&~1 → 44 then 48 = EBREAK);
+   both JALR sums (45, 49) are odd so the &~1 masking is load-bearing. 4329 total, pnr
+   unchanged (979 LCs, 5 BRAMs, 52 MHz).
+   Surprises: (1) my hand encoding of jal x5,8 dropped the opcode byte (0x00800280 vs
+   0x008002EF) — third hand-encoding slip in a row, the lib cross-check caught it again;
+   (2) the old bench's comment claims an expWord loop "misbehaved" in iverilog — a
+   `for` loop calling a case-function works fine here, that note was about something else.
+   Advice for Branches (next): EQ/LT/LTU already leave the ALU instance; extend the
+   EXECUTE PC mux to `branch taken ? PC + Bimm` with taken = decoded per funct3 from
+   those wires, and keep isBranch OUT of wrEn (branches write no rd).
+
+- **Branches** (task 10): processor.v — `aluIn2` now feeds rs2Val for branches too
+   (`(isALUreg|isBranch) ? rs2Val : Iimm`; Iimm would corrupt the compare), `branchCond`
+   is a funct3 mux over EQ/LT/LTU and their complements, `doBranch = isBranch & branchCond`
+   joins the EXECUTE PC mux (`doJump ? jumpTarget : doBranch ? PC+Bimm : PC+4`), isBranch
+   stays out of wrEn. New tb/branches_tb.v (87 checks): 4 per-cycle EXECUTE walks (BEQ
+   not-taken/taken, BLT taken, BLTU not-taken on the SAME −1 vs 0xFFFFFFFF operands —
+   checks aluLT/aluLTU/branchCond/branchTarget wires and the PC after the edge), free-run
+   to halt, 15 register checks (markers=1, poisons=0, backward BNE 2→1→0, loop sum 55),
+   37-word hand-encoding cross-check. 4416 total. LCs 979 → 1121 (87%), Fmax 44.68 MHz.
+   Surprises: two more hand-encoding slips, both caught by the lib cross-check, both MINE:
+   (1) add x21,x21,x20 — first put rs2 at rs1's shift (20<<15), then dropped bit 15 when
+   re-summing (0x014A0AB3 vs correct 0x014A8AB3); (2) addi x19,x19,-1 rd nibble (…913 vs
+   …993). The DUT/lib were right both times. Advice for LUI/AUIPC (next): add a wrData arm
+   (`isLUI ? Uimm : isAUIPC ? PC + Uimm : …`) and put isLUI|isAUIPC into wrEn — same shape
+   as the jump path. Resource warning: 87% of the part is used; if the next tasks squeeze,
+   share the ALU's three barrel shifters first (task-8 note) before touching anything else.
+
+- **LUI and AUIPC** (task 11): processor.v — `wrEn |= isLUI|isAUIPC`, `wrData` gains two
+   arms (`isLUI ? Uimm : isAUIPC ? PC+Uimm : aluOut`); PC still holds the instruction's
+   own address during EXECUTE, so no extra latch needed. New tb/lui_auipc_tb.v (39 checks):
+   wire walks of the first LUI (wrData = Uimm, NOT the ALU's rs1+Iimm garbage) and first
+   AUIPC, LUI bit-31, LUI+ADDI = 0x12345678, AUIPC with bit-31 Uimm, same-Uimm-at-two-PCs
+   (x9−x7 = 8 = PC difference), LUI to x0 dropped, 8-word lib cross-check. Also flipped
+   processor_tb's stale "LUI still a NOP" regression to expect 0x12345000. 4455 total,
+   LCs 1121 → 1182 (92%), Fmax 47 MHz.
+   Surprises: three more MY-side constant slips in one session, all caught before touching
+   RTL: (1) rd=7/rd=9 U-encodings 0x13B7/0x14B7 vs correct 0x1397/0x1497 (7<<7=0x380,
+   9<<7=0x480 — I keep mis-hexing rd<<7); (2) 12 + 0x1000 = 0x100C, not 0x101C. Advice:
+   write expected values as *expressions* (32'd12 + 32'h1000) where possible — the walk
+   checks written that way passed first try while the literal ones failed. Resource alarm:
+   92% of the part; the program-suite task is bench-only, but Loads/Stores will add logic —
+   share the ALU's three barrel shifters (task-8 note) BEFORE loads/stores if pnr squeezes.
+
+- **Program suite** (task 12): bench-only, no RTL change (LCs stay 1182/92%, Fmax 47 MHz).
+   tb/programs_tb.v (90 checks, 4545 total): fib(10)=55 loop, gcd(48,18)=6 subtraction loop,
+   CALL/RET sub called twice (a0=5→11, a0=20→41), nested main→f1→f2 with ra saved to x20 via
+   ADDI + sp(x2) frame push/pop (acc 1+10+100=111, sp balanced, ra restored). Pattern: all
+   four programs assembled MID-SIM into the live MEM (memPC=0 between programs, rest filled
+   with EBREAK), run sequentially on the one Processor; halt = fetch strobe quiet 8 cycles;
+   mid-run state polled at unique PCs; every word cross-checked vs hand-encoded expWord.
+   Label workflow: pre-init `integer Lx = <byte addr>;` — Label() verifies vs memPC and
+   endASM() $finishes the bench (no PASS) on a mismatch; LabelRef(L) returns L−memPC
+   (relative), so JAL/branches take LabelRef directly. 5 FAILs, all mine, DUT+lib right
+   again: (1) blt nibble swap 0x008C4663→0x0084C663; (2) I-type imm field is imm[11:0] —
+   addi x2,x2,-4 = 0xFFC10113, NOT 0xFFF10113 (imm[31:20] of the 32-bit value is wrong);
+   (3) copy-pasted jal +16 over the +8 site; (4) stray-bit typo 0x00010113; (5) polled PC 24
+   (the sub's own ADDI, x11 still pre-commit) instead of the return site PC 8 — poll PCs
+   where the checked writes have already committed.    Advice for Loads (next): 92% full —
+   share the ALU's three barrel shifters (task-8 note) before adding load logic if pnr
+   squeezes; loads also need the LOAD wait state + byte-lane/sign-ext mux on mem_rdata.
+
+- **Shrink the core** (task 13): the refactor itself was already sitting uncommitted from
+   iteration 17 (auto-commit ac26f16) — this session verified it instead of rewriting it.
+   All four techniques are in: one 33-bit subtractor (aluMinus) feeds SUB/EQ/LT/LTU and the
+   branch compares; one right-shifter with flip32 bit-reversal does SRL/SRA/SLL; one
+   PC+imm adder serves JAL/AUIPC/branch targets (JALR reuses the ALU ADD); branchCond
+   muxes the ALU's EQ/LT/LTU (no comparator in Processor); plus the `instr` register and
+   the x0 read muxes are gone (mem_rdata holds the instruction through EXECUTE;
+   RegisterBank[0] can only ever read 0). Numbers: 1182 LCs / 47 MHz / 5 BRAMs →
+   66 LCs flattened / 878 LUT4 unflattened / 118.76 MHz / 3 BRAMs. All 10 benches pass
+   unchanged (4545 checks).
+   Surprises: (1) the flattened count is PROGRAM-DEPENDENT — with the datapath cleaned up,
+   yosys prunes per-bit to what the ROM exercises: netlist PC is bits [9:2] only, x1 only
+   [4:0], regfile BRAMs narrowed to 16-bit, ROM to one BRAM. I verified the 66-LC netlist
+   really runs (port-level smoke bench in /tmp: LEDS walk cycle-exact) — and mid-session
+   the harness hardened make check with `make equiv` (RTL-vs-netlist co-sim, 4000 cycles)
+   and an unflattened-LUT4 budget gate, guarding this permanently. (2) A scratch program
+   exercising high bits (LUI/ADD/SRA) re-widens the flattened netlist to 681 LCs / 6 BRAMs.
+   Advice for Loads (next): watch the UNFLATTENED total (878/900), not the flattened 66 —
+   load/store logic (~250 cells) lands on the unflattened number, so the margin is ~22
+   LUT4; if it goes red, share further inside the ALU (e.g. fold the XOR arm into the
+   subtractor path) before touching module boundaries.
+
+- **Loads** (task 14): landed the previous session's WIP (4-cycle load: EXECUTE drives the
+   read strobe with the ALU-computed address rs1+Iimm, LOAD wait state writes the extended
+   data; lane/width/rd latched in FETCH_REGS because mem_rdata holds load *data* during
+   LOAD). Memory itself unchanged — MEM[addr[9:2]] was already byte-addressable; lane
+   select + sign/zero extension live in the Processor. Budget was red (1073 > 900), so the
+   session became a shrink pass: **1073 → 885 unflattened** (Processor 565 → 377, ALU 485
+   and Decoder 17 unchanged), pnr 84 LCs / 3 BRAM / 106.9 MHz, checks 4545 → 4612
+   (+67 loads_tb: all 5 load types × all offsets, sign bits set/clear, DATAW/DATAB,
+   negative offset, x0/x1 loads, LOAD-state cycle walk, 23-word hand-encoding cross-check).
+   What paid: (1) 10-bit PC arithmetic — PC is stored 32-bit (benches read it) but only
+   [9:0] is architectural (1 KB memory), so the +4 adder, the next-PC mux, the JAL/JALR
+   link arm and the mem_addr fetch/load mux all shrank to 10 bits (−158 LUT4); AUIPC's
+   pcPlusImm adder stays 32-bit because AUIPC writes the full PC+Uimm to rd. (2) ldExt as
+   one parallel `case (ldFunct3)` with `half = ldOff[1] ? mem[31:16] : mem[15:0]` and
+   ldHiByte = half[15:8] as wiring (−30). Surprises: (1) mid-session the harness raised
+   LC_BUDGET 900 → 1150 (eb0be53) and scheduled a "Shrink round 2" after Stores — the
+   shrink still landed at 885, leaving ~265 headroom for stores. (2) Dead ends, measured
+   or worked: folding ADD into the shared subtractor via an isADD-complemented input is a
+   wash (SB_CARRY needs the complemented bit as a raw input → +32 LUT4 cancels −32);
+   routing JAL's link through the ALU needs 32-bit in1/in2 muxes (+64) vs the −30 adder.
+   Advice for Stores (next): Memory gains mem_wdata/mem_wmask[3:0]; the store path is
+   cheaper than loads (no sign extension — just a lane shifter/mask from addr[1:0] and
+   funct3), and mem_addr is already 10-bit; keep the store data on rs2Val (already
+   latched). Watch the unflattened total after the change; round-2 shrink (ALU ~490 →
+   ~250 per the harness note) comes only after Stores.
+
+- **Stores** (task 15): Memory gained `mem_wdata`/`mem_wmask[3:0]` (four per-lane write
+   guards in the same always block as the read). Processor store path: `aluIn2` picks Simm
+   for stores, `aluFunct3` forced 000 for `isLoad|isStore` (shared address adder), and
+   `storeWrite = isStore & (state == EXECUTE)` gates both the mem_addr mux and mem_wmask —
+   the gate is load-bearing because the decoder still decodes the old store during the
+   following FETCH_INSTR (mem_rdata holds) and would otherwise write to the *fetch* address.
+   stData replicates the byte/halfword across all four lanes (pure wiring), stMask comes
+   from funct3 + aluOut[1:0]; stores take the plain 3 cycles, no wait state. New
+   tb/stores_tb.v (81 checks, 4693 total): per-cycle SB walk (no read strobe, wmask/wdata,
+   write commits on the edge leaving EXECUTE), SB 0..3 lane isolation over poison, SH 0/2,
+   SW, SW-over-SB clearing the SB's byte, sign-bit 0xFF/0x80/0xFFFF via LB/LBU/LH/LHU,
+   negative-offset SB, poison neighbours intact, 39-word expWord cross-check.
+   Numbers: 885 → 1010 unflattened LUT4 (Processor 377→451, Memory 0→51 write-merge; ALU
+   485 untouched), pnr 914 LCs / 6 BRAMs / 46.5 MHz, budget 1150 OK.
+   Surprises: (1) first program put the data area at 0x80 while the program had grown to
+   39 words (0x98) — the stores overwrote their own program mid-run; data base moved to
+   0xA0. (2) Four expectation slips, DUT right every time: MEM[44] had 0x80 in the wrong
+   byte, MEM[45] forgot the first SH already wrote 0xFFFF, the -8-offset SB landed on byte
+   0 (0xA8-8=0xA0) with x2=0x44 not 0x22 (rebased x19 to 0xA9), and expWord kept the old
+   128/136 immediates. (3) My python slicer encoded loads with ADDI's opcode 0x13 — check
+   the script against the spec formula too, it had its own bug. Advice for Shrink round 2
+   (next): Memory's +51 is the byte-enable read-modify-write merge (yosys log shows how it
+   mapped); Processor's +74 is the store path; ALU 485 → ~250 remains the big prize per
+   the harness note.
+
+- **Handoff from an interrupted session (hit the step cap mid-edit on "Shrink the core, round 2"; tree is RED). Its own notes, verbatim:**
+
+  > **Maximum steps for this agent have been reached.** Tools are disabled; here is the handoff state.
+  > 
+  > ## ⚠️ CRITICAL: The repo is currently MID-EDIT and `make check` is RED
+  > 
+  > `rtl/processor.v` will **not compile** right now. I restructured the AUIPC path (AUIPC now goes through the ALU) and replaced the 32-bit `pcImm`/`pcPlusImm` adder with a 10-bit `pcImm10`/`pcPlusImm10`, but three references to the old `pcPlusImm` wire still exist in the file and must be fixed before anything builds:
+  > 
+  > 1. **`wrData` mux** — remove the `isAUIPC ? pcPlusImm :` arm entirely (AUIPC now falls through to `aluOut`, which equals PC + Uimm; this is the whole point of the restructure).
+  > 2. **EXECUTE PC update** — change `doBranch ? {22'b0, pcPlusImm[9:0]}` to `doBranch ? {22'b0, pcPlusImm10}` (numerically identical: low 10 bits of the old 32-bit sum).
+  > 3. **`branchTarget` alias** — change `wire [31:0] branchTarget = pcPlusImm;` to `= {22'b0, pcPlusImm10;}` (benches only check it at small positive values 20/28/52, which agree).
+  > 
+  > ## What was accomplished (evidence-based ablation, all in `/var/folders/.../T/opencode/alu_exp`)
+  > 
+  > - `make check` was green at start: 4693 checks, 1010 unflattened LUT4 (ALU 485, Processor 451, Memory 51, Decoder 17, Clockworks 6), budget 1150. Task: reach ≤ 950.
+  > - **ALU ablation (485)**: shifter+flips ≈ 244, logic ops 94, subtractor/EQ/LT/LTU 92, ADD 52. Key findings: `flip32` IS pure wiring standalone, but costs ~44 (output) + ~33 (input mux) in the ALU because the SLL flip defeats mux-arm merging — hoisting to continuous assigns did **not** help (still 485). The task hint's "~250 ALU" is not achievable with the fixed interface (EQ/LT/LTU are checked on every vector in `tb/alu_tb.v`, so the always-on compare subtractor must stay → two adders minimum). ALU floor ≈ 485; leave it.
+  > - **Processor ablation (448 standalone)**: load path only 61 (already in the hint's suggested shape — hint's "~200" was wrong), store 4, branchCond 5, but the **`wrData` mux tree costs 231**, of which the AUIPC arm + its 32-bit `pcImm` mux + 32-bit adder ≈ 127.
+  > - **Designed fix (partially applied)**: route AUIPC through the ALU (`aluIn1 = isAUIPC ? PC : rs1Val`, `aluIn2` gains Uimm arm, `aluFunct3` forces 000 for AUIPC too) → PC+imm adder shrinks to 10 bits, `wrData` loses an arm. Estimated net ≈ −50 to −60 LUT4. Applied so far: `aluIn1`/`aluIn2`/`aluFunct3`/ALU instantiation and the `pcImm10`/`pcPlusImm10`/`jumpTarget` block (with updated comments).
+  > 
+  > ## Remaining work (next session)
+  > 
+  > 1. Apply the three fixes above, then `make sim` (all 12 benches, 4693 checks must pass unchanged — `lui_auipc_tb`'s `wrData`/register checks still hold since AUIPC writeback value is unchanged) and `make stat`.
+  > 2. If still above 950: (a) merge `ldExt`'s 5-arm case into 3 arms (LB/LBU and LH/LHU share data, `ldFunct3[2]` picks sign/zero fill; est. −10); (b) optionally move the ALU's output flip into `shRight` so SLL/SRL arms merge (est. −12).
+  > 3. `make check` fully green (incl. `equiv`), tick the task in `TASKS.md`, append before/after per-module numbers to `PROGRESS.md` (include the ablation findings — they contradict the task hint's estimates and will save the next shrink session hours), commit `task: shrink round 2 — AUIPC through ALU, 10-bit branch/JAL adder`.
+   > 4. Do **not** start the next task (Memory-mapped IO).
+
+- **Shrink the core, round 2** (task 16): started from the interrupted session's RED tree —
+   applied its three documented fixes (drop the `isAUIPC ? pcPlusImm` wrData arm, EXECUTE PC
+   update and `branchTarget` alias onto `pcPlusImm10`) plus moved `pc10`'s declaration above
+   the adder block (iverilog "declaration after use" was the actual compile error). That
+   completed the AUIPC-through-ALU restructure: 1010 → 971 (Processor 451 → 412). Then two
+   more moves landed: ldExt 5-arm case → 3 data arms + fill-bit mux (0 unflattened change),
+   and **LUI through the ALU** (in1 = 0, in2 = Uimm, funct3 forced ADD; wrData loses its
+   isLUI arm): Processor 412 → 382. Final: **941 unflattened** (ALU 485, Processor 382,
+   Memory 51, Decoder 17, Clockworks 6) ≤ 950 goal; pnr 860 LCs / 6 BRAM / 47.62 MHz;
+   4693 checks unchanged; equiv 4000 cycles 0 mismatches.
+   Measured ablations (scratch harness in /tmp, yosys -noflatten per module): (1) ldExt
+   merge saved 0 unflattened — yosys had already merged the shared data across the
+   sign/zero arms (only −8 flattened LC); (2) pre-muxing the ALU's SLL output flip into one
+   shOut case arm cost +1 — the two-arm case is better, abc folds the arm select for free;
+   (3) LUI-through-ALU −30, the real win: a constant-0 arm in aluIn1 folds into the LUT
+   while a 32-bit Uimm arm in wrData does not. Confirmed the interrupted session's ALU
+   floor ≈ 485 (shifter+flips 244, logic 94, subtractor/EQ/LT/LTU 92, ADD 52) — the task
+   hint's "~250 ALU" is unreachable with EQ/LT/LTU as always-on outputs; its
+   ADD-into-subtractor and JAL-link-through-ALU ideas measured as washes/losses.
+   Advice for Memory-mapped IO (next): 941 + ~100 for UART/IO ≈ 1041 < 1150 budget, no
+   shrink needed before starting; the address decode is a bit-22 compare + word-offset
+   muxes, and `mem_addr` is already 10-bit — IO space sits above bit 22 so the RAM decode
+   is unchanged.
+
+- **Memory-mapped IO** (task 17): SOC decodes `mem_addr[22]` as IO space — bit 2 → LEDS
+   write reg, bit 3 → UART data write, bit 4 → status read (bit 9 = busy = ~o_ready);
+   `corescore_emitter_uart` at 12 MHz/115200. RAM read strobe and write mask are gated off
+   while ioSel, so IO addresses cannot alias into MEM[addr[9:2]]. Processor's load/store
+   mem_addr half widened 10 → 23 bits (`{9'b0, aluOut[22:0]}`; fetch side still pc10) —
+   bit 22 never left the chip before this. The read mux uses a REGISTERED ioSelR: during
+   the LOAD wait state mem_addr is back at the PC, so the combinational decode is gone
+   exactly when the Processor consumes mem_rdata. io_tb (62 checks, 4755 total): program
+   writes 5'b10101 to LEDS (on the SOC port), sends "OK\n" waiting on busy; bench has a
+   mid-bit 115200-baud receiver (nominal 8680.6 ns/bit) checking the 3 bytes + stop bits;
+   19-word lib-vs-hand cross-check; RAM-intact and halt checks. Numbers: 941 → 1031
+   unflattened (emitter 27, SOC 50, Processor 382→395), pnr 981 LCs / 6 BRAM / 42.48 MHz.
+   Surprises: (1) the emitter's `data` reg has NO power-on value → in RTL sim `|data` is X
+   forever and o_ready never resolves (hardware FFs power up 0, so it only bites sim);
+   io_tb kicks `dut.uart.data = 0` at t=0, and SOC gates TXD with a sticky txStarted reg
+   (`TXD = uartTx | ~txStarted`) so the X never escapes — this also keeps equiv green
+   (X|1 = 1 on both sides). (2) The emitter swallows a single-cycle i_valid pulse that
+   lands on its internal shift edge (~1 in 106) — SOC HOLDS i_valid until o_ready drops
+   instead of pulsing. (3) The emitter's real bit period is 106 clocks (12e6/106 ≈ 113.2
+   kbaud, 1.7% slow — the counter wraps 0→255 before the shift), mid-bit sampling at the
+   nominal rate still has 0.35-bit margin on the last data bit. (4) The lib's SRLI macro
+   is BUGGY — encodes `srl rd,rs1,x(shamt)` (funct7 0, shamt as rs2); SLLI is accidentally
+   right, SRAI correct. Used ANDI(x13,x13,512) for the busy-bit test. (5) Lib LUI takes
+   the FINAL value — LUI(x5,32'h00400000), not 0x400 (misread the task-7 note, one wasted
+   sim round; the EXP cross-check caught it). Advice for the demo program (next): all IO
+   infrastructure is done and proven — ROM program needs LUI base 0x400000, SW to
+   0x400004 (LEDS) / 0x400008 (UART data), LW 0x400010 + ANDI 0x200 busy-wait (copy the
+   io_tb pattern; remember the lib SRLI/LUI quirks). 119 LUT4 headroom, no shrink needed.
+   Note: equiv only exercises the ROM program (LEDS/TXD ports), IO logic is covered by
+   io_tb alone; soc_tb's LEDS expectations are now "dark" (same 62-check count).
+
+- **Hardware demo program** (task 18): ROM is now the real demo — 22 code words + 3 message
+   words: LB/SW banner loop ("Loop RISC-V\n", 12 bytes from word 22, busy-wait on status bit 9
+   via LW+ANDI 512+BNE), then a LED walk 1,2,4,8,16→restart forever (ADD x9,x9,x9 / ANDI 31 /
+   restart JAL) paced by a countdown loop: `ifdef BENCH` delay=2 (~30 cycles/step), hardware
+   LUI 0x7A000+ADDI 0x120 = 500000×6 = 3.0M cycles = 0.25 s/step at 12 MHz. soc_tb rewritten
+   (102 checks): 12-byte mid-bit receiver, LEDS-dark-until-banner, full cycle 1,2,4,8,16→1,
+   step-gap ∈ [25,60], PC-in-loop liveness, three-way ROM check (python-verified hand words vs
+   lib-assembled bench copy vs dut.memory.MEM). memory_tb re-assembles the program itself
+   (fill now starts at word 25). 4755 → 4814 checks; LCs unchanged (1031 LUT4 unflattened,
+   981 pnr, 43.35 MHz). equiv needed a fix: the ROM now uses the UART, so the RTL instance's
+   X-poisoned emitter handshake (no power-on values; netlist FFs power up 0) diverged from the
+   netlist at cycle 34 — added the same `initial rtl.uart.data = 0` kick io_tb/soc_tb already
+   use to tools/equiv_tb.v (sim-only artifact, hardware unaffected).
+   Surprises: (1) module-level `integer i` is shared across initial blocks — the assembly
+   block's check loop at t=1ns clobbered the main block's reset-loop counter mid-iteration
+   (15 checks silently skipped); the assembly block now has its own `wi`. (2) LB is funct3
+   000, not 010 (that's LW) — my python encoder call was wrong, the lib was right again.
+   (3) Emitter acceptance is every-clock (1-cycle latency), so the SW→busy-wait pattern has
+   no race; busy lasts ~1166 clocks/byte (1060 transmit + ~106 ready delay) → banner ≈ 14k
+   clocks ≈ 1.2 ms. Ready for the human: `make prog` then `make uart` shows the banner once,
+   LEDs walk at 4 Hz.
+

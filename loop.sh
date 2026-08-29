@@ -25,6 +25,12 @@
 #   PROGRESS      the agent's memory file                                  (PROGRESS.md)
 #   HANDOFF       1 = when a session ends without ticking its task, append its last
 #                 message to PROGRESS so the next session inherits the context (1)
+#   PROGRESS_KEEP keep only the newest N entries in PROGRESS; older ones move to
+#                 PROGRESS-archive.md before each session (context hygiene)        (6)
+#   TASKS_KEEP_DONE keep only the newest N ticked tasks in TASKS; older ticked ones
+#                 move to TASKS-done.md before each session                        (2)
+#   Per-task model: a task line may end with  <!-- model: provider/model -->  to run
+#                 that one task on a different model (default runner only).
 #   TASKS, PROMPT task file / prompt file                            (TASKS.md / PROMPT.md)
 #
 # Exit codes: 0 all tasks done, 1 setup problem, 2 max iterations, 3 stuck, 4 repeated duds.
@@ -46,6 +52,8 @@ fi
 TEST_COUNT_RE=${TEST_COUNT_RE:-Tests +[0-9]+ passed|CHECKS TOTAL: [0-9]+}
 PROGRESS=${PROGRESS:-PROGRESS.md}
 HANDOFF=${HANDOFF:-1}
+PROGRESS_KEEP=${PROGRESS_KEEP:-6}
+TASKS_KEEP_DONE=${TASKS_KEEP_DONE:-2}
 RUN=${RUN:-}
 
 RUN_ID=$(date +%Y%m%d-%H%M%S)
@@ -85,6 +93,73 @@ session_stats() {
     || printf -- '-\t-\t-\t-\t-\t-\n'
 }
 
+# Context hygiene: the agent reads TASKS and PROGRESS in full every session, and both
+# grow without bound. Rotate old material into archive files the agent is told about
+# but does not read by default. A block is a top-level "- " line plus its continuation
+# lines up to the next blank line.
+rotate_files() {
+  command -v python3 >/dev/null || return 0
+  python3 - "$PROGRESS" "$PROGRESS_KEEP" "$TASKS" "$TASKS_KEEP_DONE" <<'PY'
+import os, sys
+
+def split_blocks(text):
+    # returns (preamble_lines, blocks); a block is a list of lines starting with a '- ' line
+    pre, blocks, cur = [], [], None
+    for ln in text.split("\n"):
+        if ln.startswith("- "):
+            if cur is not None: blocks.append(cur)
+            cur = [ln]
+        elif cur is not None and (ln == "" or ln[:1] in (" ", "\t")):
+            cur.append(ln)
+        else:
+            if cur is not None: blocks.append(cur); cur = None
+            if not blocks: pre.append(ln)
+            else: blocks.append([ln])          # heading or prose between blocks: keep in place
+    if cur is not None: blocks.append(cur)
+    return pre, blocks
+
+def render(pre, blocks):
+    out = "\n".join(pre).rstrip("\n") + "\n\n"
+    for b in blocks:
+        out += "\n".join(b).rstrip("\n") + "\n\n"
+    return out
+
+def archive(path, header, blocks):
+    new = not os.path.exists(path) or os.path.getsize(path) == 0
+    with open(path, "a") as f:
+        if new: f.write(header)
+        for b in blocks: f.write("\n".join(b).rstrip("\n") + "\n\n")
+
+def rotate_progress(path, keep):
+    if not os.path.exists(path): return
+    pre, blocks = split_blocks(open(path).read())
+    entries = [b for b in blocks if b[0].startswith("- ")]
+    if len(entries) <= keep: return
+    old = entries[:-keep]
+    arch = path[:-3] + "-archive.md"
+    archive(arch, "# Progress archive (rotated out of %s by loop.sh; oldest first)\n\n" % path, old)
+    open(path, "w").write(render(pre, [b for b in blocks if b not in old]))
+    print("rotated %d PROGRESS entries to %s" % (len(old), arch))
+
+def rotate_tasks(path, keep_done):
+    if not os.path.exists(path): return
+    pre, blocks = split_blocks(open(path).read())
+    done = [b for b in blocks if b[0].startswith("- [x]")]
+    if len(done) <= keep_done: return
+    old = done[:-keep_done]
+    arch = path[:-3] + "-done.md"
+    archive(arch, "# Completed tasks (moved out of %s by loop.sh; oldest first)\n\n" % path, old)
+    open(path, "w").write(render(pre, [b for b in blocks if b not in old]))
+    print("moved %d completed tasks to %s" % (len(old), arch))
+
+rotate_progress(sys.argv[1], int(sys.argv[2]))
+rotate_tasks(sys.argv[3], int(sys.argv[4]))
+PY
+}
+
+# The first unchecked task may name its own model:  <!-- model: provider/model -->
+task_model() { grep -m1 '^- \[ \]' "$TASKS" | grep -oE '<!-- *model: *[^ >]+ *-->' | sed -E 's/<!-- *model: *([^ >]+) *-->/\1/'; }
+
 # A session that ends without ticking its task often leaves its best notes in its
 # final message (e.g. after hitting the step cap, tools are disabled and it cannot
 # write PROGRESS itself). Append that message so the next session inherits it.
@@ -93,9 +168,11 @@ handoff_note() {   # $1 = session title, $2 = iteration, $3 = status
   (( HANDOFF )) || return 0
   command -v sqlite3 >/dev/null && [[ -f "$DB" ]] || return 0
   local txt
-  # last three text turns, oldest first: a killed session rarely ends on its summary
-  txt=$(sqlite3 "$DB" "select json_extract(p.data,'\$.text') from (select p.data, p.time_created from part p join session s on s.id = p.session_id
-        where s.title = '$1' and json_extract(p.data,'\$.type') = 'text' order by p.time_created desc limit 3) p order by p.time_created;" 2>/dev/null | head -c 6000)
+  # last text turns, oldest first, minus the prompt echo and one-line filler
+  local prompt; prompt=$(cat "$PROMPT")
+  txt=$(sqlite3 -separator $'\x1e' "$DB" "select json_extract(p.data,'\$.text') from (select p.data, p.time_created from part p join session s on s.id = p.session_id
+        where s.title = '$1' and json_extract(p.data,'\$.type') = 'text' order by p.time_created desc limit 4) p order by p.time_created;" 2>/dev/null \
+        | python3 -c 'import sys; p=sys.argv[1].strip(); parts=[t.strip() for t in sys.stdin.read().split("\x1e")]; keep=[t for t in parts if len(t)>=160 and t.strip(chr(34)) != p and not t.lower().startswith(("let me","now let me","first,","i will","i\x27ll"))]; print("\n\n".join(keep)[:6000])' "$prompt")
   if (( ${#txt} < 200 )); then log "iteration $2: no substantial last message to hand off (${#txt} chars)"; return 0; fi
   {
     printf '\n- **Handoff captured by loop.sh — iteration %s ended without ticking its task (tree: %s). The session'"'"'s last message, verbatim:**\n\n' "$2" "$3"
@@ -113,7 +190,7 @@ run_iteration() {
   if [[ -n "$RUN" ]]; then
     $RUN "$prompt" > >(tee -a "$LOG" "$RUN_DIR/$title.log") 2>&1 &
   else
-    opencode run --agent loop --model "$MODEL" --auto --title "$title" "$prompt" \
+    opencode run --agent loop --model "${ITER_MODEL:-$MODEL}" --auto --title "$title" "$prompt" \
       > >(tee -a "$LOG" "$RUN_DIR/$title.log") 2>&1 &
   fi
   pid=$!
@@ -156,9 +233,12 @@ for ((i = 1; i <= MAX; i++)); do
     log "all tasks checked — loop complete after $((i - 1)) iteration(s)"
     finish 0
   fi
+  rotate_files | while read -r l; do log "$l"; done
   task=$(current_task)
   title="loop-$RUN_ID-$i"
+  ITER_MODEL=$(task_model); ITER_MODEL=${ITER_MODEL:-$MODEL}
   log "=== iteration $i/$MAX — $left task(s) left — next: $task ==="
+  [[ "$ITER_MODEL" != "$MODEL" ]] && log "iteration $i: task requests model $ITER_MODEL"
 
   start=$(date +%s)
   run_iteration "$title"; rc=$?
