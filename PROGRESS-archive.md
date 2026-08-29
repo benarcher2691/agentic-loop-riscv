@@ -520,3 +520,33 @@
   > Processor local: 530 LUT4 + 83 SB_CARRY (the counter's carry chain) and the regfile mapped to 4 BRAMs with `rs1Val/rs2Val` absorbed into BRAM output registers. Let me quantify each piece with ablation variants in the SOC context:
   > vA got the stale scratch copy — let me redo it from the repo's current file and apply the ablation edits:
 
+- **RDCYCLE delays in the demo** (task 24, phase 2): the counted delay loop is gone; each LED
+   step now reads cycle (CSRRS 0xC00) once, then loops {CSRRS now, SUB diff = now−start,
+   BLTU diff,DELAY} — 9 cycles/iteration, wrap-safe by construction. DELAY = 300 (sim) /
+   3 000 000 = 0x2DC6C0 via LUI+ADDI (hw, 0.25 s). Program grew 33 → 35 words: message moved
+   word 30 → 32 (byte 128), labels WDELAY=64, ECHO=88, EBUSY=104; all three copies updated
+   (rtl/memory.v, soc_tb, memory_tb). Bench: period model **9·ceil(DELAY/9)+21 is exact**
+   (probe run: all 4 steps measure 327 for DELAY=300), checked ±9 (±3 instructions) with the
+   bench's own cycle counter. The 32-bit wrap is exercised for real: right after the first
+   pattern commits the bench deposits `dut.processor.cycles = 32'hFFFFFF00` (hierarchical
+   write between edges — lands before the start-read samples 2 cycles later), the first loop
+   spans 0xFFFFFFFF→0, `cycleh` 0→1 is checked, period unchanged. 10363 → 10700 checks;
+   Processor 494 → 499 LUT4 is abc run-to-run noise (only ROM contents changed; Memory still
+   120), unflattened 1146/1150, pnr 1139/1280, Fmax 36.18 MHz, equiv clean.
+   Surprises: (1) my hand SUB encoding was wrong (0x40EF87B3 — computed rs1=x31; correct
+   0x40E787B3) and the three-way ROM cross-check caught it, the lib was right. (2) The
+   "LEDS hold 16" check had to grow from 200 to exp_period+200 cycles: with the old ~30-cycle
+   delay a short hold could only pass in the echo loop, but a 327-cycle period keeps LEDS=16
+   through the whole last delay loop, so the PC-range check fired mid-delay-loop.
+   Advice for the monitor task (next): echo loop now lives at bytes 88..124, ROM is words
+   0..34, message at byte 128; the delay loop clobbers x14/x15/x16 (monitor re-establishes its
+   own state anyway); the deposit trick works for any counter/regs test; exp_period-style
+   models belong in the bench next to the program copy they model.
+
+- **Handoff captured by loop.sh — iteration 1 ended without ticking its task (tree: TIMEOUT). The session's last message, verbatim:**
+
+  > Now `monitor_io_tb`'s constants and the soc_tb header comment:
+  > One stale constant left in `monitor_io_tb` (the second stack-word check still expects 56; the DUT correctly wrote 44):
+  > All sims pass (14766 checks). Now the budget test:
+  > `make check` is green — but pnr landed at **exactly** 1150/1150. That's too fragile: PROGRESS.md notes abc run-to-run noise of ±5 LUT4, so a re-run could tip it red. Let me find real headroom. First candidate: the `x1` mirror output (32 FFs) — is it used anywhere?
+

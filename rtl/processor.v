@@ -282,10 +282,27 @@ module Processor (
     // [21:13] drive nothing, so the mux is 14 bits wide, not 23.
     wire loadRead   = isLoad & (state == EXECUTE);
     wire storeWrite = isStore & (state == EXECUTE);
+    // T2 (audit A1 major / A2): a load/store whose effective address (aluOut
+    // during EXECUTE) is misaligned for its width, or points outside the
+    // machine, halts the CPU exactly like a SYSTEM halt — state and PC stay
+    // put, rd is never written. Unlike SYSTEM, the access strobes must also
+    // be gated (they are asserted combinationally during EXECUTE): an
+    // ungated read of the RX word would clear rxAvail, an ungated store
+    // would commit. Misalignment: LW/SW (funct3 010) need addr[1:0] == 00,
+    // LH/LHU/SH (funct3 001/101) need addr[0] == 0; byte accesses (000/100)
+    // are always aligned. Out of range: bit 22 clear (not IO space) and
+    // address >= 0x1800 (past the 6 KB RAM) — within the consumed 13 bits
+    // that is addr[12:11] == 11 (0x1800-0x1FFF), plus any bit above 12 set
+    // (alias region); today such reads return X and such writes vanish.
+    wire lsExec     = (isLoad | isStore) & (state == EXECUTE);
+    wire misalign   = (~funct3[2] & funct3[1] & ~funct3[0] & (aluOut[1] | aluOut[0])) |
+                      ( funct3[0] & ~funct3[1] & aluOut[0]);
+    wire outOfRange = ~aluOut[22] & ((aluOut[12] & aluOut[11]) | (|aluOut[31:13]));
+    wire badAddr    = lsExec & (misalign | outOfRange);
     assign mem_addr  = (loadRead | storeWrite)
                                 ? {9'b0, aluOut[22], 9'b0, aluOut[12:0]}
                                 : {19'b0, pc13};
-    assign mem_rstrb = (state == FETCH_INSTR) | loadRead;
+    assign mem_rstrb = ((state == FETCH_INSTR) | loadRead) & ~badAddr;
 
     // Store data and byte enables. The addressed lane is selected by the
     // memory's wmask, so the data word simply replicates the stored unit
@@ -312,7 +329,7 @@ module Processor (
       endcase
     end
     assign mem_wdata = stData;
-    assign mem_wmask = storeWrite ? stMask : 4'b0000;
+    assign mem_wmask = (storeWrite & ~badAddr) ? stMask : 4'b0000;
 
     // Branch condition: funct3 selects among the ALU's EQ/LT/LTU and their
     // complements (BGE/BNE/BGEU). Branches write no rd — isBranch stays out
@@ -362,6 +379,11 @@ module Processor (
                     if (isSYSTEM && !isCSRread) begin
                         // EBREAK and every non-CSR-read SYSTEM encoding:
                         // halt — state and PC stay put.
+                    end else if (badAddr) begin
+                        // Misaligned or out-of-range effective address:
+                        // halt — state and PC stay put; the strobe/wmask
+                        // gating above keeps the access from reaching the
+                        // memory or IO, so there is no side effect either.
                     end else if (isLoad) begin
                         // Read strobe and data address are already driven
                         // combinationally; remember the byte lane and wait

@@ -10,36 +10,6 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
 
    module to include into.
 
-- **RDCYCLE delays in the demo** (task 24, phase 2): the counted delay loop is gone; each LED
-   step now reads cycle (CSRRS 0xC00) once, then loops {CSRRS now, SUB diff = now−start,
-   BLTU diff,DELAY} — 9 cycles/iteration, wrap-safe by construction. DELAY = 300 (sim) /
-   3 000 000 = 0x2DC6C0 via LUI+ADDI (hw, 0.25 s). Program grew 33 → 35 words: message moved
-   word 30 → 32 (byte 128), labels WDELAY=64, ECHO=88, EBUSY=104; all three copies updated
-   (rtl/memory.v, soc_tb, memory_tb). Bench: period model **9·ceil(DELAY/9)+21 is exact**
-   (probe run: all 4 steps measure 327 for DELAY=300), checked ±9 (±3 instructions) with the
-   bench's own cycle counter. The 32-bit wrap is exercised for real: right after the first
-   pattern commits the bench deposits `dut.processor.cycles = 32'hFFFFFF00` (hierarchical
-   write between edges — lands before the start-read samples 2 cycles later), the first loop
-   spans 0xFFFFFFFF→0, `cycleh` 0→1 is checked, period unchanged. 10363 → 10700 checks;
-   Processor 494 → 499 LUT4 is abc run-to-run noise (only ROM contents changed; Memory still
-   120), unflattened 1146/1150, pnr 1139/1280, Fmax 36.18 MHz, equiv clean.
-   Surprises: (1) my hand SUB encoding was wrong (0x40EF87B3 — computed rs1=x31; correct
-   0x40E787B3) and the three-way ROM cross-check caught it, the lib was right. (2) The
-   "LEDS hold 16" check had to grow from 200 to exp_period+200 cycles: with the old ~30-cycle
-   delay a short hold could only pass in the echo loop, but a 327-cycle period keeps LEDS=16
-   through the whole last delay loop, so the PC-range check fired mid-delay-loop.
-   Advice for the monitor task (next): echo loop now lives at bytes 88..124, ROM is words
-   0..34, message at byte 128; the delay loop clobbers x14/x15/x16 (monitor re-establishes its
-   own state anyway); the deposit trick works for any counter/regs test; exp_period-style
-   models belong in the bench next to the program copy they model.
-
-- **Handoff captured by loop.sh — iteration 1 ended without ticking its task (tree: TIMEOUT). The session's last message, verbatim:**
-
-  > Now `monitor_io_tb`'s constants and the soc_tb header comment:
-  > One stale constant left in `monitor_io_tb` (the second stack-word check still expects 56; the DUT correctly wrote 44):
-  > All sims pass (14766 checks). Now the budget test:
-  > `make check` is green — but pnr landed at **exactly** 1150/1150. That's too fragile: PROGRESS.md notes abc run-to-run noise of ±5 LUT4, so a re-run could tip it red. Let me find real headroom. First candidate: the `x1` mirror output (32 FFs) — is it used anywhere?
-
 - **Stack + UART byte primitives** (phase 3, task 1): resident program rewritten — sp = x2 = 0x1800
    (one past the 6 KB top, growing down), banner now goes one word per char through PUTBYTE
    (LW not LB — see below), then MAIN calls ECHO2 forever. ECHO2 is the non-leaf demo: push ra,
@@ -142,4 +112,31 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    yosys ablation before editing, and remember the halt logic can share the existing ALU comparator
    rather than adding one. Also in this commit: the previous session's uncommitted file-rotation
    housekeeping (TASKS/TASKS-done/PROGRESS-archive).
+
+- **Handoff captured by loop.sh — iteration 2 ended without ticking its task (tree: TIMEOUT). The session's last message, verbatim:**
+
+  > The ldst program's misaligned cases (LH/LHU at offsets 1/3, SH at 13/15) now halt mid-`G`. Per the task I'll remove them and replace with aligned coverage of equal strength (LH/LHU from the second pattern word, SH pairs on a second word with a different value). First let me check the `LI` macro's expansion rule (word counts feed the hand-encoding cross-check indices) and scan `stores_tb` for misaligned stores:
+  > `LI` confirmed: 1 word when the value fits signed 12 bits, else LUI (+ADDI only if low 12 bits ≠ 0) — so `LI(x19, 32'h8765)` = 2 words. The stores_tb grep came back empty — checking its actual formatting:
+  > `stores_tb` uses `SB  (` spacing — its SH offsets are all even (8/10/20/22) and bytes are never misaligned, so it's safe. Now the hwprogs ldst edits:
+   > Now the expectation block for the new aligned coverage:
+
+- **T2: halt on bad data addresses** (phase 5, T2): the iteration-2 handoff had already finished
+   the engineering (RTL halt logic, badaddr_tb, hwprogs ldst rework) and the tree was green —
+   this session verified every acceptance line and did the tick/commit. RTL: `badAddr` gates
+   `mem_rstrb`/`mem_wmask` AND halts in EXECUTE (arm ordered after SYSTEM, before isLoad, so
+   `ldOff` is never latched on a bad access). The halt comparators cost +11 LUT4 unflattened
+   (1147 → 1158) and +22 pnr LCs (1141 → 1163); Ben raised LC_BUDGET 1150 → 1180 for exactly
+   this (99e5ede), so the budget question is settled — T3 inherits ~22 LUT4 headroom.
+   Fmax 38.45 → 34.63 MHz, still 2.9× margin. 15635 → 15823 checks in 19 benches (badaddr_tb
+   = 188), equiv clean. Also in this commit: another round of file rotation (hwprogs entry →
+   TASKS-done, two old PROGRESS entries → PROGRESS-archive).
+   Advice for T3 (exact-match IO decode, next): (1) the misalign term deliberately ignores
+   bit 22 — IO-space misaligned accesses halt via misalign (badaddr cases 12/18), while
+   unmapped ALIGNED IO offsets are T3's job; (2) the SOC's LED-word read is currently the
+   ioRdata *default* arm — exact-match decode replaces that default with 32'd0, so the edit
+   may be roughly LUT-neutral, but ablate first and remember ledReg's declaration must stay
+   above the read-path always block (iverilog bind order); (3) the badaddr bench's memory
+   model (poison fill + canaries + X/vanish semantics matching rtl/Memory) is a good template
+   for fault-injection benches; (4) `tRun`'s reset-preserves-registers trick lets one bench
+   cover many permanent-halt cases without re-elaboration.
 

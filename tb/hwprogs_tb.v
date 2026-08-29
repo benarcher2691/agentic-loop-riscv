@@ -15,9 +15,11 @@
 //   0: alu    — ALU sweep over 5 fixed vector pairs: ADD SUB SLL SLT SLTU
 //               XOR SRL OR AND SRA (50 results; pairs include 0, +1/-1
 //               edges, 0x7FFFFFFF/0x80000000, shift amounts 0 and 31).
-//   1: ldst   — every load/store width and byte offset: LB LBU LH LHU LW
-//               over offsets 0..3 of a two-word pattern, SB/SH/SW store-
-//               and-readback at every lane (27 results).
+//   1: ldst   — every load/store width at every ALIGNED offset: LB LBU
+//               LH LHU LW over a two-word pattern, SB/SH/SW store-and-
+//               readback at every lane (27 results; T2: misaligned or
+//               out-of-range accesses halt the CPU, so hardware programs
+//               must stay halt-free).
 //   2: fibgcd — iterative fib(15) and subtract-Euclid gcd on two pairs
 //               (3 results: 610, 21, 6).
 //   3: jumpbr — branch torture: taken AND not-taken BEQ/BNE/BLT/BGE/BLTU/
@@ -325,14 +327,14 @@ module hwprogs_tb;
 
     run_and_check("alu", 0);
 
-    // ===== program 1: ldst — every load/store width and offset ============
+    // ===== program 1: ldst — every load/store width and aligned offset ====
     // Pattern: 0x8899AABB at buf+0, 0xCCDDEEFF at buf+4 (buf = 0x1000).
     // Little-endian bytes of word 0: +0:BB +1:AA +2:99 +3:88.
-    // Loads: LB/LBU/LH/LHU at offsets 0..3, LW at 0/4. The halfword lane
-    // comes from addr[1] only (pinned RTL behaviour, see processor.v:
-    // "half = ldOff[1] ? mem_rdata[31:16] : mem_rdata[15:0]"), so LH/LHU
-    // at odd offsets read the LOW half; SH writes lanes {addr[1],addr[1]+1}.
-    // Stores: a zeroed word, then SB/SH/SW, then LW readback per lane.
+    // Loads: LB/LBU at offsets 0..3, LH/LHU at 0/2 (word 0) and 4/6 (word 1),
+    // LW at 0/4 — every access aligned (T2: misaligned or out-of-range
+    // accesses halt the CPU, so hardware programs must stay halt-free).
+    // Stores: a zeroed word, then SB per lane, SH per halfword lane pair on
+    // two words (two values), then LW readback per lane.
     memPC = 0;
     LI(x9, 32'h800);              // result block base
     LI(x10, 32'h600D0001);        // signature, index 1
@@ -352,33 +354,35 @@ module hwprogs_tb;
     LBU(x14, x15, 2); SW(x14, x9, 0); ADDI(x9, x9, 4);
     LBU(x14, x15, 3); SW(x14, x9, 0); ADDI(x9, x9, 4);
     LH(x14, x15, 0); SW(x14, x9, 0); ADDI(x9, x9, 4);
-    LH(x14, x15, 1); SW(x14, x9, 0); ADDI(x9, x9, 4);
     LH(x14, x15, 2); SW(x14, x9, 0); ADDI(x9, x9, 4);
-    LH(x14, x15, 3); SW(x14, x9, 0); ADDI(x9, x9, 4);
+    LH(x14, x15, 4); SW(x14, x9, 0); ADDI(x9, x9, 4);
+    LH(x14, x15, 6); SW(x14, x9, 0); ADDI(x9, x9, 4);
     LHU(x14, x15, 0); SW(x14, x9, 0); ADDI(x9, x9, 4);
-    LHU(x14, x15, 1); SW(x14, x9, 0); ADDI(x9, x9, 4);
     LHU(x14, x15, 2); SW(x14, x9, 0); ADDI(x9, x9, 4);
-    LHU(x14, x15, 3); SW(x14, x9, 0); ADDI(x9, x9, 4);
+    LHU(x14, x15, 4); SW(x14, x9, 0); ADDI(x9, x9, 4);
+    LHU(x14, x15, 6); SW(x14, x9, 0); ADDI(x9, x9, 4);
     LW(x14, x15, 0); SW(x14, x9, 0); ADDI(x9, x9, 4);
     LW(x14, x15, 4); SW(x14, x9, 0); ADDI(x9, x9, 4);
     LI(x16, 32'h0000005A);        // store byte value
-    LI(x17, 32'h00001234);        // store halfword value
+    LI(x17, 32'h00001234);        // store halfword value 1
     LI(x18, 32'hA5A5A5A5);        // store word value
+    LI(x19, 32'h00008765);        // store halfword value 2 (sign bit set)
     SW(x0, x15, 8);  SB(x16, x15,  8); LW(x14, x15,  8); SW(x14, x9, 0); ADDI(x9, x9, 4);
     SW(x0, x15, 8);  SB(x16, x15,  9); LW(x14, x15,  8); SW(x14, x9, 0); ADDI(x9, x9, 4);
     SW(x0, x15, 8);  SB(x16, x15, 10); LW(x14, x15,  8); SW(x14, x9, 0); ADDI(x9, x9, 4);
     SW(x0, x15, 8);  SB(x16, x15, 11); LW(x14, x15,  8); SW(x14, x9, 0); ADDI(x9, x9, 4);
     SW(x0, x15, 12); SH(x17, x15, 12); LW(x14, x15, 12); SW(x14, x9, 0); ADDI(x9, x9, 4);
-    SW(x0, x15, 12); SH(x17, x15, 13); LW(x14, x15, 12); SW(x14, x9, 0); ADDI(x9, x9, 4);
     SW(x0, x15, 12); SH(x17, x15, 14); LW(x14, x15, 12); SW(x14, x9, 0); ADDI(x9, x9, 4);
-    SW(x0, x15, 12); SH(x17, x15, 15); LW(x14, x15, 12); SW(x14, x9, 0); ADDI(x9, x9, 4);
+    SW(x0, x15, 20); SH(x19, x15, 20); LW(x14, x15, 20); SW(x14, x9, 0); ADDI(x9, x9, 4);
+    SW(x0, x15, 20); SH(x19, x15, 22); LW(x14, x15, 20); SW(x14, x9, 0); ADDI(x9, x9, 4);
     SW(x0, x15, 16); SW(x18, x15, 16); LW(x14, x15, 16); SW(x14, x9, 0); ADDI(x9, x9, 4);
     JALR(x0, x1, 0);              // RET (leaf)
     proglen = memPC >> 2;
     for (i = 0; i < proglen; i = i + 1) prog[i] = MEM[i];
 
     // encoding cross-checks (python encoder; word indices hand-counted:
-    // prologue 13 words, 18 load results x3, 3 LIs, 9 store tests x5, RET):
+    // prologue 13 words, 18 load results x3, 4 LIs (1+2+2+2), 9 store tests
+    // x5, RET):
     // LB x14,0(x15): imm=0 rs1=01111 f3=000 rd=01110 op=0000011
     `CHECK_EQ(MEM[13], 32'h00078703, "LB x14,0(x15) hand encoding")
     // LBU x14,0(x15): f3=100
@@ -388,9 +392,9 @@ module hwprogs_tb;
     // LHU x14,0(x15): f3=101
     `CHECK_EQ(MEM[49], 32'h0007D703, "LHU x14,0(x15) hand encoding")
     // SB x16,8(x15): imm=8 rs2=10000(data) rs1=01111(base) f3=000 op=0100011
-    `CHECK_EQ(MEM[73], 32'h01078423, "SB x16,8(x15) hand encoding")
+    `CHECK_EQ(MEM[75], 32'h01078423, "SB x16,8(x15) hand encoding")
     // SH x17,12(x15): imm=12 f3=001
-    `CHECK_EQ(MEM[93], 32'h01179623, "SH x17,12(x15) hand encoding")
+    `CHECK_EQ(MEM[95], 32'h01179623, "SH x17,12(x15) hand encoding")
 
     // expected result block — loads from the fixed pattern via Verilog
     // byte-lane slicing (independent of the DUT), stores hand-computed
@@ -401,21 +405,25 @@ module hwprogs_tb;
       expblk[1 + j] = {{24{p0[8*j+7]}}, p0[8*j +: 8]};   // LB, sign-extended
       expblk[5 + j] = {24'd0, p0[8*j +: 8]};             // LBU
     end
-    for (j = 0; j < 4; j = j + 1) begin
-      e = (j >= 2) ? p0[31:16] : p0[15:0];               // lane from addr[1]
-      expblk[9 + j]  = {{16{e[15]}}, e[15:0]};               // LH
-      expblk[13 + j] = {16'd0, e[15:0]};                   // LHU
-    end
+    // LH/LHU at 0/2 (word 0 halves) and 4/6 (word 1 halves)
+    expblk[9]  = {{16{p0[15]}}, p0[15:0]};   // LH  +0: 0xAABB sign-extends
+    expblk[10] = {{16{p0[31]}}, p0[31:16]};  // LH  +2: 0x8899 sign-extends
+    expblk[11] = {{16{p1[15]}}, p1[15:0]};   // LH  +4: 0xEEFF sign-extends
+    expblk[12] = {{16{p1[31]}}, p1[31:16]};  // LH  +6: 0xCCDD sign-extends
+    expblk[13] = {16'd0, p0[15:0]};          // LHU +0
+    expblk[14] = {16'd0, p0[31:16]};         // LHU +2
+    expblk[15] = {16'd0, p1[15:0]};          // LHU +4
+    expblk[16] = {16'd0, p1[31:16]};         // LHU +6
     expblk[17] = p0;                                     // LW +0
     expblk[18] = p1;                                     // LW +4
     expblk[19] = 32'h0000005A;    // SB lane 0
     expblk[20] = 32'h00005A00;    // SB lane 1
     expblk[21] = 32'h005A0000;    // SB lane 2
     expblk[22] = 32'h5A000000;    // SB lane 3
-    expblk[23] = 32'h00001234;    // SH +12: addr[1]=0 -> lanes 0,1
-    expblk[24] = 32'h00001234;    // SH +13: addr[1]=0 -> lanes 0,1
-    expblk[25] = 32'h12340000;    // SH +14: addr[1]=1 -> lanes 2,3
-    expblk[26] = 32'h12340000;    // SH +15: addr[1]=1 -> lanes 2,3
+    expblk[23] = 32'h00001234;    // SH +12: lanes 0,1
+    expblk[24] = 32'h12340000;    // SH +14: lanes 2,3
+    expblk[25] = 32'h00008765;    // SH +20: lanes 0,1, second value
+    expblk[26] = 32'h87650000;    // SH +22: lanes 2,3, second value
     expblk[27] = 32'hA5A5A5A5;    // SW
     $writememh("build/hwprogs-ldst.prog.hex", prog, 0, proglen - 1);
     $writememh("build/hwprogs-ldst.expect.hex", expblk, 0, explen - 1);
