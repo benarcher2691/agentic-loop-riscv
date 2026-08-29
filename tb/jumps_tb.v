@@ -38,7 +38,6 @@ module jumps_tb;
 
   wire [31:0] mem_addr;
   wire        mem_rstrb;
-  wire [31:0] x1_out;   // not "x1": the assembler lib localparams x0..x31
 
   // Bench memory model, same contract as rtl/Memory: synchronous read of
   // MEM[addr[9:2]] on the clock edge while the strobe is high.
@@ -47,7 +46,7 @@ module jumps_tb;
   always @(posedge clk) if (mem_rstrb) mem_rdata <= MEM[mem_addr[9:2]];
 
   Processor dut (.clk(clk), .resetn(resetn), .mem_addr(mem_addr),
-                 .mem_rdata(mem_rdata), .mem_rstrb(mem_rstrb), .x1(x1_out));
+                 .mem_rdata(mem_rdata), .mem_rstrb(mem_rstrb));
 
   `include "riscv_assembly.v"
   initial begin
@@ -170,7 +169,7 @@ module jumps_tb;
     `CHECK_EQ(dut.RegisterBank[10], 32'd2,  "two-iteration loop: counter = 2")
     `CHECK_EQ(dut.RegisterBank[11], 32'd8,  "subroutine ran twice: (7+1) twice")
     `CHECK_EQ(dut.RegisterBank[12], 32'd5,  "main continued after return #1")
-    `CHECK_EQ(x1_out, 32'd36, "x1 output mirrors RegisterBank[1]")
+    `CHECK_EQ(dut.RegisterBank[1], 32'd36, "x1 (ra) = 36 read hierarchically (x1 mirror port removed)")
 
     // The assembler macros produced exactly the hand-assembled words.
     for (w = 0; w < 16; w = w + 1)

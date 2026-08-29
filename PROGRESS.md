@@ -10,13 +10,6 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
 
    module to include into.
 
-- **Handoff captured by loop.sh — iteration 2 ended without ticking its task (tree: TIMEOUT). The session's last message, verbatim:**
-
-  > Odd — same command gives Processor 492 in scratch vs 530 in `make stat`. Let me check if yosys/abc is non-deterministic run-to-run:
-  > The scratch copies were stale (pre-fix) — that explains 492 vs 530: the correct 32-bit read path costs +38. So the read path is already tight. The suspect is now the counter itself (~175 LUT4 for a 64-bit +1 is way over the ~64 expected). Let me see the Processor cell breakdown:
-  > Processor local: 530 LUT4 + 83 SB_CARRY (the counter's carry chain) and the regfile mapped to 4 BRAMs with `rs1Val/rs2Val` absorbed into BRAM output registers. Let me quantify each piece with ablation variants in the SOC context:
-  > vA got the stale scratch copy — let me redo it from the repo's current file and apply the ablation edits:
-
 - **RDCYCLE delays in the demo** (task 24, phase 2): the counted delay loop is gone; each LED
    step now reads cycle (CSRRS 0xC00) once, then loops {CSRRS now, SUB diff = now−start,
    BLTU diff,DELAY} — 9 cycles/iteration, wrap-safe by construction. DELAY = 300 (sim) /
@@ -115,7 +108,6 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
   > `make check` is green (15059 checks, pnr fits). First unchecked task: **Exportable hardware test programs** (`tb/hwprogs_tb.v`). Let me read PROGRESS.md and the existing monitor bench to reuse its models.
   > Now let me check the Makefile and check.vh to understand bench integration.
 
-
 - **Exportable hardware test programs** (phase 3, task 3): bench-only, as advised — budget untouched
    (1149/1150). `tb/hwprogs_tb.v` assembles 4 programs (alu/ldst/fibgcd/jumpbr) into one shared `MEM`
    sequentially (memPC reset between), uploads each at 0x400 with W, runs with G, reads the 0x800
@@ -138,3 +130,16 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    program too; (6) my BLT hand constant was wrong once (branch offset is from the branch's own
    address, not the label's) — the three-way check caught it. 15059 → 15635 checks in 18 benches;
    pnr 1136/1280, 37.72 MHz, equiv clean.
+
+- **T1: x1 debug mirror removed** (phase 5, T1): port + 32-bit shadow + both duplicated write arms
+   deleted (processor.v port list, EXECUTE and LOAD arms; soc.v wire + connection); 8 benches rewired
+   from `.x1(x1_out)` to hierarchical `RegisterBank[1]` reads (4 CHECKs re-targeted, count held at
+   15635). All green: 18 benches, lint, equiv, hwreset, pnr 1141/1280, Fmax 38.45 MHz.
+   **The ≥25 LUT4 acceptance line was a wrong premise, now measured twice**: the mirror is 32 FFs,
+   and iCE40 FFs pack into LCs beside their LUTs — real saving is 2 LUT4 unflattened (1149→1147,
+   Processor 497→495) + 5 pnr LCs. The audit's "~30 LUT" was a grep estimate counting FFs as LUTs.
+   Advice for T2 (next): you inherit only 3 LUT4 unflattened headroom (1147/1150) — run a scratch
+   yosys ablation before editing, and remember the halt logic can share the existing ALU comparator
+   rather than adding one. Also in this commit: the previous session's uncommitted file-rotation
+   housekeeping (TASKS/TASKS-done/PROGRESS-archive).
+

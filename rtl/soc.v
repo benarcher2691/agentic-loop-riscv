@@ -22,7 +22,6 @@ module SOC #(
     wire [31:0] mem_addr, mem_rdata, mem_wdata;
     wire        mem_rstrb;
     wire [3:0]  mem_wmask;
-    wire [31:0] x1;
 
     // ---- IO space decode -------------------------------------------------
     // mem_addr[22] is only ever set by a load/store (the fetch address is a
@@ -72,8 +71,7 @@ module SOC #(
         .mem_rdata(mem_rdata),
         .mem_rstrb(mem_rstrb),
         .mem_wdata(mem_wdata),
-        .mem_wmask(mem_wmask),
-        .x1       (x1)
+        .mem_wmask(mem_wmask)
     );
 
     // RAM: reads and writes are suppressed while the bus is in IO space, so

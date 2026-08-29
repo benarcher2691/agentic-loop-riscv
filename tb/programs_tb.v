@@ -55,7 +55,6 @@ module programs_tb;
   wire        mem_rstrb;
   wire [31:0] mem_wdata;
   wire [3:0]  mem_wmask;
-  wire [31:0] x1_out;   // not "x1": the assembler lib localparams x0..x31
 
   // Bench memory model, same contract as rtl/Memory: synchronous read of
   // MEM[addr[12:2]] on the clock edge while the strobe is high (6 KB),
@@ -72,7 +71,7 @@ module programs_tb;
 
   Processor dut (.clk(clk), .resetn(resetn), .mem_addr(mem_addr),
                  .mem_rdata(mem_rdata), .mem_rstrb(mem_rstrb),
-                 .mem_wdata(mem_wdata), .mem_wmask(mem_wmask), .x1(x1_out));
+                 .mem_wdata(mem_wdata), .mem_wmask(mem_wmask));
 
   `include "riscv_assembly.v"
 
@@ -358,7 +357,7 @@ module programs_tb;
     `CHECK_EQ(dut.RegisterBank[1],  32'd12,  "ra restored to main's link 8 + 4")
     `CHECK_EQ(dut.RegisterBank[2],  32'd0,   "sp balanced back to 0")
     `CHECK_EQ(dut.RegisterBank[20], 32'd12,  "callee-saved x20 still holds 12")
-    `CHECK_EQ(x1_out,               32'd12,  "x1 output mirrors RegisterBank[1]")
+    `CHECK_EQ(dut.RegisterBank[1],  32'd12,  "ra = 12 read hierarchically (x1 mirror port removed)")
     for (w = 0; w < 14; w = w + 1)
       `CHECK_EQ(MEM[w], expWord(4, w), "P4 assembler word matches the hand encoding")
 

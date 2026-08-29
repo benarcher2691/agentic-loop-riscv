@@ -20,7 +20,6 @@ module processor_tb;
 
   wire [31:0] mem_addr;
   wire        mem_rstrb;
-  wire [31:0] x1_out;   // not "x1": the assembler lib localparams x0..x31
 
   // Bench memory model, same contract as rtl/Memory: synchronous read of
   // MEM[addr[9:2]] on the clock edge while the strobe is high.
@@ -29,7 +28,7 @@ module processor_tb;
   always @(posedge clk) if (mem_rstrb) mem_rdata <= MEM[mem_addr[9:2]];
 
   Processor dut (.clk(clk), .resetn(resetn), .mem_addr(mem_addr),
-                 .mem_rdata(mem_rdata), .mem_rstrb(mem_rstrb), .x1(x1_out));
+                 .mem_rdata(mem_rdata), .mem_rstrb(mem_rstrb));
 
   // Program (word index = address/4), x1=5 and x2=12 are the operands:
   //    0: ADDI (x1,  x0,    5)  x1  = 5
@@ -200,7 +199,7 @@ module processor_tb;
     `CHECK_EQ(dut.RegisterBank[23], 32'd33,         "x23 = 33 (shift amount source)")
     `CHECK_EQ(dut.RegisterBank[24], 32'd2,          "SRL amount 33: uses bits[4:0] = 1")
     `CHECK_EQ(dut.RegisterBank[25], 32'h12345000,     "LUI writes Uimm: x25 = 0x12345000")
-    `CHECK_EQ(x1_out, 32'd5, "x1 output mirrors RegisterBank[1]")
+    `CHECK_EQ(dut.RegisterBank[1], 32'd5, "x1 = 5 read hierarchically (x1 mirror port removed)")
 
     // The assembler macros produced exactly the hand-assembled words.
     for (w = 0; w < 27; w = w + 1)

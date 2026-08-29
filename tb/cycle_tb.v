@@ -37,7 +37,6 @@ module cycle_tb;
   wire        mem_rstrb;
   wire [31:0] mem_wdata;
   wire [3:0]  mem_wmask;
-  wire [31:0] x1_out;   // not "x1": the assembler lib localparams x0..x31
 
   // Bench memory model, same contract as rtl/Memory (6 KB, synchronous read
   // while the strobe is high, byte-enabled writes).
@@ -53,7 +52,7 @@ module cycle_tb;
 
   Processor dut (.clk(clk), .resetn(resetn), .mem_addr(mem_addr),
                  .mem_rdata(mem_rdata), .mem_rstrb(mem_rstrb),
-                 .mem_wdata(mem_wdata), .mem_wmask(mem_wmask), .x1(x1_out));
+                 .mem_wdata(mem_wdata), .mem_wmask(mem_wmask));
 
   `include "riscv_assembly.v"
 

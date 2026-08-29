@@ -24,7 +24,6 @@ module lui_auipc_tb;
 
   wire [31:0] mem_addr;
   wire        mem_rstrb;
-  wire [31:0] x1_out;   // not "x1": the assembler lib localparams x0..x31
 
   // Bench memory model, same contract as rtl/Memory: synchronous read of
   // MEM[addr[9:2]] on the clock edge while the strobe is high.
@@ -33,7 +32,7 @@ module lui_auipc_tb;
   always @(posedge clk) if (mem_rstrb) mem_rdata <= MEM[mem_addr[9:2]];
 
   Processor dut (.clk(clk), .resetn(resetn), .mem_addr(mem_addr),
-                 .mem_rdata(mem_rdata), .mem_rstrb(mem_rstrb), .x1(x1_out));
+                 .mem_rdata(mem_rdata), .mem_rstrb(mem_rstrb));
 
   `include "riscv_assembly.v"
   initial begin

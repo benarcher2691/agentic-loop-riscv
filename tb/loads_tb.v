@@ -19,7 +19,6 @@ module loads_tb;
 
   wire [31:0] mem_addr;
   wire        mem_rstrb;
-  wire [31:0] x1_out;
 
   // Bench memory model, same contract as rtl/Memory: synchronous read of
   // MEM[addr[9:2]] on the clock edge while the strobe is high.
@@ -28,7 +27,7 @@ module loads_tb;
   always @(posedge clk) if (mem_rstrb) mem_rdata <= MEM[mem_addr[9:2]];
 
   Processor dut (.clk(clk), .resetn(resetn), .mem_addr(mem_addr),
-                 .mem_rdata(mem_rdata), .mem_rstrb(mem_rstrb), .x1(x1_out));
+                 .mem_rdata(mem_rdata), .mem_rstrb(mem_rstrb));
 
   // Program (word index = addr/4). Data base x1 = 0x80 = word 32.
   //    0: ADDI (x1,  x0, 128)   x1  = 0x80
@@ -185,7 +184,7 @@ module loads_tb;
     `CHECK_EQ(dut.RegisterBank[20], 32'h80FF7F01, "LW [0x88-8] negative offset reaches 0x80")
     `CHECK_EQ(dut.RegisterBank[0],  32'd0,        "LW into x0 is dropped")
     `CHECK_EQ(dut.RegisterBank[1],  32'h00000001, "LBU into x1")
-    `CHECK_EQ(x1_out,               32'h00000001, "x1 output mirrors the load writeback")
+    `CHECK_EQ(dut.RegisterBank[1],  32'h00000001, "LBU writeback overwrote base 0x80 in x1 (hierarchical read; x1 mirror port removed)")
 
     // The data area really contains what the loads read, and the assembler
     // produced the hand-assembled words.

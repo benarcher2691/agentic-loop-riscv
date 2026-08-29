@@ -29,10 +29,7 @@
 //                instruction — so ldActive/ldRd were latched earlier. rd is
 //                written, PC <= PC + 4.
 //
-// x0 always reads 0 (read mux; writes to rd 0 are dropped). The x1 output
-// mirrors RegisterBank[1] through a register written on the same edge with
-// the same data — an asynchronous read of the register file would stop it
-// mapping to block RAM and blow the hx1k logic budget.
+// x0 always reads 0 (read mux; writes to rd 0 are dropped).
 module Processor (
     input  wire        clk,
     input  wire        resetn,
@@ -40,8 +37,7 @@ module Processor (
     input  wire [31:0] mem_rdata,
     output wire        mem_rstrb,
     output wire [31:0] mem_wdata,   // store data (lane-replicated, see below)
-    output wire [3:0]  mem_wmask,   // byte-write enables, one per memory lane
-    output reg  [31:0] x1 = 32'd0   // mirror of RegisterBank[1], starts at 0
+    output wire [3:0]  mem_wmask    // byte-write enables, one per memory lane
 );
     localparam [1:0] FETCH_INSTR = 2'd0,
                      FETCH_REGS  = 2'd1,
@@ -375,8 +371,6 @@ module Processor (
                     end else begin
                         if (doWrite && wrReg != 5'd0)
                             RegisterBank[wrReg] <= wrData;
-                        if (doWrite && wrReg == 5'd1)
-                            x1 <= wrData;      // mirror of RegisterBank[1]
                         PC    <= doJump    ? {19'b0, jumpTarget[12:0]} :
                                  doBranch  ? {19'b0, pcPlusImm13} :
                                              {19'b0, pcPlus4};
@@ -390,8 +384,6 @@ module Processor (
                     // holds this instruction's own address.
                     if (doWrite && wrReg != 5'd0)
                         RegisterBank[wrReg] <= wrData;
-                    if (doWrite && wrReg == 5'd1)
-                        x1 <= wrData;      // mirror of RegisterBank[1]
                     PC    <= {19'b0, pcPlus4};
                     state <= FETCH_INSTR;
                 end

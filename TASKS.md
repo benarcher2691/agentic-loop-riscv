@@ -141,75 +141,75 @@ are built and proven in simulation by the loop (the serial models in the benches
 
 directions); the host-side tool and `make hwcheck` are supervisor work (they need the board to test).
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-- [x] **Stack + UART byte primitives.** *(Done 2026-08-29. sp = x2 = 0x1800; GETBYTE/PUTBYTE leaves poll 0x400020 bit 8 / 0x400010 bit 9; ECHO2 pushes ra, calls PUTBYTE twice (byte, byte+1) through the stack, pops and RETs. `tb/monitor_io_tb.v`: 'A'→'A','B'; sentinel 'Z'→'Z','[' (ra survived); pushed stack word 0x17FC = 44; sp/ra idle-state checks; edge bytes 0x00/0x7F/0xFF. soc_tb reconciled: banner + echo loop, LEDS dark. 10700 → 14766 checks; 1148/1150 unflattened, pnr 1150/1280, 39.59 MHz, equiv clean.)* The monitor (next task) needs nested subroutines, so first give the resident program a real memory stack — do NOT hand-juggle link registers across nested calls (that path is fragile and has burned sessions). In `Memory`'s resident program: reserve a scratch/stack region high in RAM (e.g. sp = x2 = 0x1800, growing down; the monitor's code lives low). Convention: a subroutine that itself calls another must, on entry, `ADDI sp,sp,-4; SW(ra,sp,0)` and on exit `LW(ra,sp,0); ADDI sp,sp,4; RET` — leaf routines may skip it. Write two helpers used by everything after: **GETBYTE** (blocking: poll the UART RX status word at 0x400020 until bit 8 set, read the byte from bits[7:0] into a0, clearing avail) and **PUTBYTE** (blocking: poll the UART TX status at 0x400010 until not busy, then write a0's low byte to 0x400008). Prove the machinery with a small resident program: print the banner "Loop RISC-V\n", then a routine `ECHO2` that reads one byte with GETBYTE and calls PUTBYTE **twice** through the stack (echoing it, then echoing it+1), demonstrating a 2-deep nested call whose `ra` is correctly saved/restored. Bench `tb/monitor_io_tb.v` (reuse the serial TX/RX bench models from `tb/uart_rx_tb.v` / `tb/io_tb.v`): send one byte, check both echoed bytes come back on TXD in order, and that execution continues correctly after the nested return (e.g. a sentinel byte sent last is also echoed — proving `ra` was not clobbered). **Reconcile `tb/soc_tb.v`**: the resident program no longer does the old LED walk, so update its expectations — keep the banner check; replace the LED-walk-forever checks with the new behavior (banner, then the echo loop; LEDS may be left at a known value). `make check` under budget.
-
 - [x] **Monitor command protocol.** *(Done 2026-08-29. ROM: ECHO2 → command loop, 98 code words + 12 message words (message now at byte 392); labels WBYTE=20 MAIN=40 CHK_W=72 WLOOP=96 WBODY=104 WK=124 CHK_R=136 RLOOP=160 RBODY=168 CHK_G=188 UNK=224 GET32=236 PUT32=292 GETBYTE=348 GBDONE=364 PUTBYTE=372. GET32/PUT32 use an 8-byte stack frame (ra at sp+4, scratch word at sp+0) and assemble/disassemble with SB/LBU — no shifts, no OR. MAIN re-establishes x5 every iteration and the G arm again after the call (a G routine may clobber all but sp). SOC: LED word readable at 0x400004 as the ioRdata default arm; ledReg declaration moved above the read path (iverilog bind order). Benches: monitor_tb 111 checks (V; W/R of 8 words incl. 0x7FFFFFFF/0x80000000; G of an uploaded 10-word sum routine → 0x61 at 0x420; LED 0x15 written len=1 and read back; unknown '?'; post-G survival V; sp idle 0x1800); monitor_io_tb rewritten (50): V with a live spy on PUT32's sp-dip to 0x17F8, stale link 68 at 0x17FC, unknown edge bytes 0x00/0x7F/0xFF; soc_tb reconciled (4797) with a 110-word three-way cross-check from an independent python encoder — lib LUI takes the FINAL value, my encoder's first cut emitted 0x400002B7 for 0x004002B7; memory_tb copy updated (6271). 14766 → 15059 checks; 1149/1150 unflattened — the LEDS-read arm (+6 on SOC) was absorbed by abc noise (Processor 501→497, Memory 120→119); pnr 1136/1280, 37.72 MHz, equiv clean. ONE LUT4 spare: any further RTL edit must re-measure first.)* Build on the stack + GETBYTE/PUTBYTE from the previous task. Replace `ECHO2` with the monitor command loop: read a command byte with GETBYTE, dispatch, repeat forever. Commands (all multi-byte values little-endian 32-bit, sent/received via GETBYTE/PUTBYTE, using GET32/PUT32 helpers that call GETBYTE/PUTBYTE four times through the stack): `V` (0x56) → PUT32 the 4 bytes "RV32"; `W` addr len data… → GET32 addr, GET32 len, then `len` bytes written to memory starting at addr (RAM or the IO space at 0x400000+), reply byte `K` (0x4B); `R` addr len → GET32 addr, GET32 len, PUT the `len` bytes read from addr; `G` addr → GET32 addr, `JALR ra,addr,0` (call it; the routine returns with RET, may clobber everything but sp), then reply `K`; any other byte → reply `?` (0x3F). Make the LED IO word at 0x400004 readable so `R` can read it back. Bench `tb/monitor_tb.v` (serial models, driving the protocol): `V`→"RV32"; `W` 8 words at 0x400 then `R` them back; `G` a small uploaded routine (loaded via `W`) that sums those 8 words into 0x420 and returns, then `R` the sum; write 5'b10101 to the LED word via `W` and `R` it back; an unknown command → `?`. Bytes handled at full 115200 with no inter-byte gaps required. `make check` under budget.
 
 - [x] **Exportable hardware test programs.** *(Done 2026-08-29. Four programs in `tb/hwprogs_tb.v`, all uploaded at 0x400 via W, run with G, result block at 0x800 read with R and checked: alu (5 fixed vector pairs × ADD SUB SLL SLT SLTU XOR SRL OR AND SRA = 50 results, expectations from Verilog ops incl. shift 0/31 and 0x80000000 edges), ldst (LB/LBU/LH/LHU at offsets 0..3 + LW aligned over a two-word pattern, SB/SH/SW store-and-readback per lane = 27 results; odd-offset LH/LHU read the LOW half and SH writes lanes {addr[1],+1} — pinned RTL behaviour, documented), fibgcd (fib(15)=610, gcd(1071,462)=21, gcd(48,18)=6 against independent Verilog reference loops), jumpbr (13 branch tests, taken AND not-taken for all six types on 0/1/2/-1/min/max operands, JAL link=8, JALR via register, JALR bit-0 clearing = 16 results). 21 hand-encoding cross-checks (python encoder): all R-type funct3/funct7 combos, LB/LBU/LH/LHU/SB/SH, all six branches, AUIPC, SW. Exports: build/hwprogs-<name>.prog.hex / .expect.hex ($system unavailable in this iverilog → build/ directly, per the task's fallback; iverilog writes `// 0xNNN` address comments every 16 words — host tool must skip them). 15059 → 15635 checks in 18 benches; RTL untouched, 1149/1150 unflattened, pnr 1136/1280, 37.72 MHz, equiv clean.)* `tb/hwprogs_tb.v` assembles a set of self-contained test programs with the macros — at least: the ALU sweep with fixed vectors, every load/store width and offset, fib/gcd, a jump/branch torture — each loaded at 0x400, ending by writing a result block (a signature word `0x600D0000 | index` followed by its result words) at 0x800 and returning with `ret`. The bench runs each program through the RTL via the monitor (upload with `W`, run with `G`, read the block with `R`) and checks the results against hand-computed expectations. Then it `$writememh`s, per program, the program words and the expected result block to `build/hwprogs/<name>.prog.hex` and `<name>.expect.hex` for the host tool. Add `hwprogs` to `make sim` outputs (the Makefile rule for benches already runs it; just make sure `build/hwprogs/` exists — create it from the bench with `$system` if needed, or write into `build/` directly with fixed names).
 
 # Phase 4 — visual verification (parked; not needed until the SoC has a visual peripheral)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -305,7 +305,71 @@ Idea, not yet a task: a fixed webcam over the board as a verifier for outputs th
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 read back (OLED, LED matrix, VGA). Capture a frame (`imagesnap`/`ffmpeg` — one extra tool), then either
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -369,6 +433,38 @@ pixel-compare fixed regions against an image rendered by the simulation (determi
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 sensitive) or hand the frame to a vision-capable model with a yes/no question (robust, fuzzy). For the
 
 
@@ -401,7 +497,71 @@ sensitive) or hand the frame to a vision-capable model with a yes/no question (r
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 five LEDs the UART monitor (phase 3) is the better sensor; revisit this when the first visual peripheral
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -528,13 +688,114 @@ lands. Not a `- [ ]` item on purpose — the loop must not pick it up.
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Phase 5 — audit fixes (2026-08-29)
 
+
+
 Findings from the four-reviewer audit (`docs/audit-2026-08-29.md`; IDs A1–A23 there). Same
+
 rules as ever: regression FIRST (demonstrate, then fix), one task per session, `make check`
+
 fully green — note it now includes the `hwreset` stage — and both LC budgets hold at 1150.
 
-- [ ] **T1: Remove the `x1` debug mirror (A10).** `Processor`'s `x1` output port, its 32-bit shadow register and the duplicated write arms (`rtl/processor.v:44,378-379,393-394`) are dead in the shipped SoC — only benches read them (`rtl/soc.v:25,76` wires it to nothing). Delete the port and register; rewire every bench that consumed it to read `dut.processor.RegisterBank[1]` hierarchically (RTL sim only — `equiv` compares ports and is unaffected). Acceptance: no `x1` port anywhere in `rtl/`; all 18 benches + equiv green; `make stat` unflattened total drops by ≥25 LUT4 (this funds T2).
+
+
+- [x] **T1: Remove the `x1` debug mirror (A10).** *(Done 2026-08-29. Port, 32-bit shadow register and both duplicated write arms deleted from `rtl/processor.v`; `rtl/soc.v` wire + connection deleted; all 8 benches that instantiated `Processor` rewired — the 4 `x1_out` CHECKs now read `dut.RegisterBank[1]` hierarchically, check count held at 15635; equiv clean, Fmax 36.35 → 38.45 MHz. ACCEPTANCE CORRECTION: the "drops by ≥25 LUT4" premise was wrong — the audit's ~30 LUT estimate counted the 32 shadow FFs as LUTs, but on iCE40 FFs pack into LCs beside their LUT (only ~2 FF-only LCs existed; the prior session's handoff had already measured this). Measured saving: unflattened 1149 → 1147 LUT4 (Processor 497 → 495, the two write-arm compares), pnr 1146 → 1141 LCs. **T2 does NOT get 25 LUT4 from this — only 3 LUT4 unflattened headroom remain (1147/1150); T2 must find its own offset (scratch yosys ablation first) or lean on the 139 spare pnr LCs.**)* `Processor`'s `x1` output port, its 32-bit shadow register and the duplicated write arms (`rtl/processor.v:44,378-379,393-394`) are dead in the shipped SoC — only benches read them (`rtl/soc.v:25,76` wires it to nothing). Delete the port and register; rewire every bench that consumed it to read `dut.processor.RegisterBank[1]` hierarchically (RTL sim only — `equiv` compares ports and is unaffected). Acceptance: no `x1` port anywhere in `rtl/`; all 18 benches + equiv green; `make stat` unflattened total drops by ≥25 LUT4 (this funds T2).
 
 - [ ] **T2: Halt on bad data addresses (A1 major, A2).** In EXECUTE, a load/store must halt the CPU (the same permanent state-freeze as SYSTEM: PC frozen, `rd` not written, no strobe, no wmask) when the effective address is **misaligned** (LW/SW with `addr[1:0]!=0`; LH/LHU/SH with `addr[0]!=0`; byte accesses are always aligned) or **out of range** (bit 22 clear and address ≥ 0x1800 — today such loads return X and stores vanish). Write the regression bench first (`tb/badaddr_tb.v`, sim-only): each bad case via a small program; assert PC frozen for ≥20 cycles, `rd` unchanged, no memory/IO side effect; plus boundary-good cases (LW at 0x17FC, LH at 0x17FE). Then update `tb/hwprogs_tb.v`: it currently **pins the misaligned quirks as expected** (`tb/hwprogs_tb.v:330-334`) — remove those cases from the ldst *hardware* program (hardware programs must remain halt-free) and replace with aligned coverage of equal strength. Budgets must hold (T1 freed the room); watch Fmax.
 
@@ -545,3 +806,4 @@ fully green — note it now includes the `hwreset` stage — and both LC budgets
 - [ ] **T5: Coverage batch (A7/A19, A9, A11, A13/A22, A23).** (a) `tb/cycle_tb.v`: deposit `cycles=32'h7FFF_FFFE, cycleh=5`, step 3 edges, assert `cycleh` stays 5 (kills the `&cycles[30:0]` mutant); one CSR read whose EXECUTE lands exactly on the 0xFFFF_FFFF→0 wrap cycle; assert ECALL (`32'h00000073`), CSRRC and one CSRRxI encoding all halt permanently. (b) `rtl/uart_rx.v`: size the bit counter with `$clog2(BIT_CLKS)` — no behaviour change. (c) `tb/monitor_tb.v`: `W addr 0` → `K`, memory untouched; `R addr 0` → zero data bytes then a live `V`; a split command (`W` + 2 address bytes, 50 bit-times of silence, then the rest) completes normally; a `G` routine that clobbers EVERY register except `x2` (including `x1` and `x5`) → `K`, live `V`, correct LEDs. (d) `ADD x0,xN,xM` and `AUIPC x0,…` leave `x0` = 0 (one-liners in the existing benches). (e) One backward branch or JAL whose target crosses the 8 KB PC wrap, pinned mod-8192 (place the code high via `memPC`). (f) Store to the word at PC+4, then execute it: pin that the newly stored instruction executes (3-state FSM, no prefetch).
 
 - [ ] **T6: Equiv drives the SoC (A8/A20).** Extend `tools/equiv_tb.v`: add a serial `send_byte` task (copy `tb/monitor_tb.v`'s) driving the SAME `RXD` stimulus into both SOCs: the banner, then `V`, a 1-byte `W` of `0x15` to `0x400004`, an `R` of that word, and a small `G` (upload 2–3 instructions that write a word and `RET`). Run ~150–200k cycles but keep `make equiv` under ~90 s. Convert the vacuous prints into assertions: zero port mismatches (existing), a minimum TXD transition count (>200), at least one LED change, final `LEDS == 5'b10101` on both, and the decoded TXD byte streams identical between RTL and netlist (one serial receiver per DUT, byte-compare).
+

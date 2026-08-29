@@ -21,7 +21,6 @@ module stores_tb;
   wire        mem_rstrb;
   wire [31:0] mem_wdata;
   wire [3:0]  mem_wmask;
-  wire [31:0] x1_out;
 
   // Bench memory model, same contract as rtl/Memory: synchronous read of
   // MEM[addr[9:2]] while the strobe is high, synchronous byte-enabled write.
@@ -37,7 +36,7 @@ module stores_tb;
 
   Processor dut (.clk(clk), .resetn(resetn), .mem_addr(mem_addr),
                  .mem_rdata(mem_rdata), .mem_rstrb(mem_rstrb),
-                 .mem_wdata(mem_wdata), .mem_wmask(mem_wmask), .x1(x1_out));
+                 .mem_wdata(mem_wdata), .mem_wmask(mem_wmask));
 
   // Program (word index = addr/4). Data base x1 = 0xA0 = word 40 (past the 39-word program), poisoned
   // with 0xA5A5A5A5 like every other word: a stray write fails its check.

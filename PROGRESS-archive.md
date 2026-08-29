@@ -513,3 +513,10 @@
   > pnr is 1203/1280 — fits the part but over the Makefile's 1150 line, and the unflattened count is 1217. The naive 4-arm writeback mux is the first thing to fix: during a CSR read the ALU output is provably 0 (`SLT(0, negative Iimm)`), so the CSR value can be **OR-ed** into the existing tree instead of added as a fourth arm — one LUT/bit instead of two mux levels. Let me restructure:
   > The OR-trick got Processor to 439 (+36) and the unflattened total to **1144 — under budget**. But sim now fails on the read values. Let me see the full failure list:
 
+- **Handoff captured by loop.sh — iteration 2 ended without ticking its task (tree: TIMEOUT). The session's last message, verbatim:**
+
+  > Odd — same command gives Processor 492 in scratch vs 530 in `make stat`. Let me check if yosys/abc is non-deterministic run-to-run:
+  > The scratch copies were stale (pre-fix) — that explains 492 vs 530: the correct 32-bit read path costs +38. So the read path is already tight. The suspect is now the counter itself (~175 LUT4 for a 64-bit +1 is way over the ~64 expected). Let me see the Processor cell breakdown:
+  > Processor local: 530 LUT4 + 83 SB_CARRY (the counter's carry chain) and the regfile mapped to 4 BRAMs with `rs1Val/rs2Val` absorbed into BRAM output registers. Let me quantify each piece with ablation variants in the SOC context:
+  > vA got the stale scratch copy — let me redo it from the repo's current file and apply the ablation edits:
+
