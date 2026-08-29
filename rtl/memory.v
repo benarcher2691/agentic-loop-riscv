@@ -15,17 +15,21 @@ module Memory (
     reg [31:0] MEM [0:255];
 
     // ROM program: the hardware demo. Prints "Loop RISC-V\n" over the UART
-    // (byte loads from the message at word 22, busy-wait on the status word
-    // between bytes), then walks a 1 across LEDS (1,2,4,8,16, restart)
-    // forever with a software delay loop. The delay constant is shrunk under
-    // `ifdef BENCH so simulations stay fast; on hardware it is 500000
-    // iterations x 6 cycles = 3.0M cycles = 0.25 s per step at 12 MHz.
-    // tb/soc_tb.v and tb/memory_tb.v keep independent copies of these words.
+    // (byte loads from the message at word 30, busy-wait on the status word
+    // between bytes), then walks a 1 across LEDS exactly once (1,2,4,8,16 —
+    // the walk's shift-and-mask wraps the pattern to 0, which ends the loop),
+    // then echoes UART input forever: poll the RX word (0x400020), when the
+    // avail bit (8) is set write the byte back to the UART data register
+    // (busy-wait on status bit 9) and show byte & 31 on the LEDs. The delay
+    // constant is shrunk under `ifdef FAST_SIM so simulations stay fast; on
+    // hardware it is 500000 iterations x 6 cycles = 3.0M cycles = 0.25 s per
+    // step at 12 MHz. tb/soc_tb.v and tb/memory_tb.v keep independent copies
+    // of these words.
     `include "../lib/riscv_assembly.v"
-    integer WBYTE = 12, WBUSY = 20, LSTEP = 48, WDELAY = 60;
+    integer WBYTE = 12, WBUSY = 20, LSTEP = 48, WDELAY = 60, ECHO = 80, EBUSY = 96;
     initial begin
         LUI(x5, 32'h00400000);   // x5 = 0x400000 IO base
-        ADDI(x6, x0, 88);        // x6 = &message (byte 88 = word 22)
+        ADDI(x6, x0, 120);       // x6 = &message (byte 120 = word 30)
         ADDI(x7, x0, 12);        // 12 banner bytes
         Label(WBYTE);
         LB(x10, x6, 0);          // x10 = *p
@@ -52,9 +56,19 @@ module Memory (
         BNE(x14, x0, LabelRef(WDELAY));
         ADD(x9, x9, x9);         // pattern <<= 1
         ANDI(x9, x9, 31);        // keep 5 bits
-        BNE(x9, x0, LabelRef(LSTEP));
-        ADDI(x9, x0, 1);         // restart the walk
-        JAL(x0, LabelRef(LSTEP));
+        BNE(x9, x0, LabelRef(LSTEP));  // 5 steps (1,2,4,8,16); 32&31 = 0 ends it
+        Label(ECHO);
+        LW(x8, x5, 32);          // RX word {23'd0, avail, data}; read clears avail
+        ANDI(x11, x8, 256);      // avail = bit 8
+        BEQ(x11, x0, LabelRef(ECHO));
+        SW(x8, x5, 8);           // UART data <- byte (low 8 bits)
+        Label(EBUSY);
+        LW(x12, x5, 16);         // UART status
+        ANDI(x12, x12, 512);     // busy = bit 9
+        BNE(x12, x0, LabelRef(EBUSY));
+        ANDI(x13, x8, 31);       // LEDs <- byte & 31
+        SW(x13, x5, 4);
+        JAL(x0, LabelRef(ECHO));
         DATAB(8'h4C, 8'h6F, 8'h6F, 8'h70);   // "Loop"
         DATAB(8'h20, 8'h52, 8'h49, 8'h53);   // " RIS"
         DATAB(8'h43, 8'h2D, 8'h56, 8'h0A);   // "C-V\n"
