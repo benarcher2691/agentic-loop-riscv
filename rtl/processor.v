@@ -95,22 +95,29 @@ module Processor (
     // decides the branch. The second ALU operand is therefore rs2 for
     // branches as well — Iimm would corrupt the compare.
     wire        useAlu = isALUreg | isALUimm;
-    // Stores add their Simm (not Iimm) through the same ALU adder; branches
-    // compare rs2, everything else adds Iimm.
-    wire [31:0] aluIn2 = (isALUreg | isBranch) ? rs2Val :
+    // AUIPC and LUI both run through the ALU (in1 = PC resp. 0, in2 =
+    // Uimm, funct3 forced to ADD) so the separate PC+immediate adder only
+    // serves JAL/branch targets, which use 10 bits — see below, and the
+    // writeback mux has no Uimm arm (LUI's 0 + Uimm = Uimm falls through
+    // to aluOut). Branches compare rs2, stores add Simm, everything else
+    // adds Iimm.
+    wire [31:0] aluIn1 = isAUIPC ? PC : isLUI ? 32'b0 : rs1Val;
+    wire [31:0] aluIn2 = (isAUIPC | isLUI)  ? Uimm  :
+                         (isALUreg | isBranch) ? rs2Val :
                          isStore            ? Simm  : Iimm;
     wire        aluF75 = isALUreg ? funct7[5] :
                          (isALUimm && funct3 == 3'b101) ? funct7[5] : 1'b0;
 
     wire [31:0] aluOut;
     wire        aluEQ, aluLT, aluLTU;   // EQ/LT/LTU: used by branches later
-    // Loads and stores reuse the ALU's adder as the effective-address
-    // adder: forcing funct3 to 000 (with aluF75 already 0 for both) makes
-    // aluOut the rs1 + immediate address. EQ/LT/LTU do not depend on
-    // funct3, so branches are unaffected.
-    wire [2:0]  aluFunct3 = (isLoad | isStore) ? 3'b000 : funct3;
+    // Loads, stores, AUIPC and LUI reuse the ALU's adder (funct3 forced
+    // to 000 with aluF75 already 0 for all four): aluOut is then the
+    // effective address rs1 + Iimm (loads), rs1 + Simm (stores), PC +
+    // Uimm (AUIPC) or Uimm (LUI, in1 forced to 0). EQ/LT/LTU do not
+    // depend on funct3, so branches are unaffected.
+    wire [2:0]  aluFunct3 = (isLoad | isStore | isAUIPC | isLUI) ? 3'b000 : funct3;
     ALU alu (
-        .in1      (rs1Val),
+        .in1      (aluIn1),
         .in2      (aluIn2),
         .funct3   (aluFunct3),
         .funct7_5 (aluF75),
@@ -120,16 +127,6 @@ module Processor (
         .LTU      (aluLTU)
     );
 
-// One shared PC+immediate adder serves JAL's target, AUIPC's writeback
-    // and the branch target — the three classes are mutually exclusive, so
-    // a mux in front of the adder picks the immediate. JALR reuses the
-    // ALU's ADD (its funct3 is 000 and aluIn2 is Iimm) and clears bit 0.
-    // The adder stays 32-bit because AUIPC writes the full PC + Uimm to
-    // rd; JAL/branch targets only use the low 10 bits (1 KB memory).
-    wire [31:0] pcImm      = isJAL ? Jimm : isAUIPC ? Uimm : Bimm;
-    wire [31:0] pcPlusImm  = PC + pcImm;
-    wire [31:0] jumpTarget = isJAL ? pcPlusImm : (aluOut & ~32'h00000001);
-
     // Sequential PC arithmetic is 10-bit: the memory is 1 KB, so only
     // PC[9:0] is ever architecturally visible (PC is stored 32-bit with
     // high zeros — the benches read it as a 32-bit value). This keeps the
@@ -137,6 +134,18 @@ module Processor (
     // PC + 4) shares the same 10-bit sum, zero-extended.
     wire [9:0] pc10    = PC[9:0];
     wire [9:0] pcPlus4 = pc10 + 10'd4;
+
+    // One shared PC+immediate adder serves JAL's target and the branch
+    // target — the two classes are mutually exclusive, so a mux in front
+    // of the adder picks the immediate. AUIPC now goes through the ALU
+    // (see aluIn1/aluIn2 above), which lets this adder shrink to 10 bits:
+    // JAL/branch targets only use the low 10 bits (1 KB memory), and the
+    // PC update below always took pcPlusImm[9:0] anyway. JALR reuses the
+    // ALU's ADD (its funct3 is 000 and aluIn2 is Iimm) and clears bit 0.
+    wire [9:0] pcImm10      = isJAL ? Jimm[9:0] : Bimm[9:0];
+    wire [9:0] pcPlusImm10  = pc10 + pcImm10;
+    wire [31:0] jumpTarget  = isJAL ? {22'b0, pcPlusImm10}
+                                    : (aluOut & ~32'h00000001);
 
     wire        wrEn   = useAlu | doJump | isLUI | isAUIPC;
     // Byte/halfword selection of the loaded word. The lane comes from
@@ -157,31 +166,30 @@ module Processor (
                                                 : mem_rdata[7:0]);
     wire [7:0]  ldHiByte = half[15:8];
     // Width / sign-extension of the loaded word: 000 LB, 001 LH, 010 LW,
-    // 100 LBU, 101 LHU. Built as one parallel mux so the writeback tree
-    // stays shallow.
-    reg [31:0] ldExt;
-    always @(*) begin
-      case (ldFunct3)
-        3'b000:  ldExt = {{24{ldByte[7]}},  ldByte};            // LB
-        3'b001:  ldExt = {{16{ldHiByte[7]}}, half};             // LH
-        3'b100:  ldExt = {24'b0, ldByte};                       // LBU
-        3'b101:  ldExt = {16'b0, half};                         // LHU
-        default: ldExt = mem_rdata;                             // LW
-      endcase
-    end
-    // LUI writes the immediate itself; AUIPC writes PC + Uimm (PC still
-    // holds this instruction's address during EXECUTE). Jumps write the
-    // link address PC + 4; a load in the LOAD state writes its extended
-    // data; everything else comes from the ALU. The load arms live inside
-    // this one mux so the writeback tree is shared. The ldState arm MUST
-    // come first: during LOAD mem_rdata holds load data, not an
-    // instruction, so the decoder outputs (doJump/isLUI/isAUIPC) are
-    // garbage — a loaded 0xDEADBEEF decodes as JAL and would otherwise
-    // write back PC + 4 instead of the data.
+    // 100 LBU, 101 LHU. Three data arms (word / half / byte) shared by the
+    // signed/unsigned pairs: ldFunct3[2] picks zero- vs sign-fill (one bit
+    // mux feeding the replication wiring) instead of separate arms per
+    // load type.
+    wire        ldZero = ldFunct3[2];                       // LBU/LHU fill
+    wire [7:0]  ldTop  = ldFunct3[0] ? ldHiByte : ldByte;   // unit's top byte
+    wire        ldFill = ldZero ? 1'b0 : ldTop[7];
+    wire [31:0] ldExt  = (ldFunct3 == 3'b010) ? mem_rdata : // LW: as-is
+                         ldFunct3[0] ?
+                         {{16{ldFill}}, half} :              // LH/LHU
+                         {{24{ldFill}}, ldByte};             // LB/LBU
+    // LUI's Uimm now comes from the ALU (in1 = 0, in2 = Uimm — see
+    // aluIn1/aluIn2 above), so it falls through to aluOut with no
+    // dedicated arm. AUIPC's PC + Uimm comes from the ALU the same way
+    // (in1 = PC; PC still holds this instruction's address during
+    // EXECUTE). Jumps write the link address PC + 4; a load in the LOAD
+    // state writes its extended data; everything else comes from the ALU.
+    // The load arms live inside this one mux so the writeback tree is
+    // shared. The ldState arm MUST come first: during LOAD mem_rdata
+    // holds load data, not an instruction, so the decoder outputs
+    // (doJump/isLUI/isAUIPC) are garbage — a loaded 0xDEADBEEF decodes as
+    // JAL and would otherwise write back PC + 4 instead of the data.
     wire [31:0] wrData = ldState ? ldExt :
                          doJump  ? {22'b0, pcPlus4} :
-                         isLUI   ? Uimm :
-                         isAUIPC ? pcPlusImm :
                                    aluOut;
     // One register-file write port for both writeback states: the decoder
     // is only valid in EXECUTE, the latched load bookkeeping in LOAD.
@@ -244,8 +252,9 @@ module Processor (
       endcase
     end
     wire        doBranch     = isBranch & branchCond;
-    // Bench-visible aliases of the shared adder's result (pure wiring).
-    wire [31:0] branchTarget = pcPlusImm;
+    // Bench-visible alias of the shared adder's result (pure wiring; the
+    // 10-bit sum zero-extended — benches only check small positive targets).
+    wire [31:0] branchTarget = {22'b0, pcPlusImm10};
 
     always @(posedge clk) begin
         if (!resetn) begin
@@ -286,7 +295,7 @@ module Processor (
                         if (doWrite && wrReg == 5'd1)
                             x1 <= wrData;      // mirror of RegisterBank[1]
                         PC    <= doJump    ? {22'b0, jumpTarget[9:0]} :
-                                 doBranch  ? {22'b0, pcPlusImm[9:0]} :
+                                 doBranch  ? {22'b0, pcPlusImm10} :
                                              {22'b0, pcPlus4};
                         state <= FETCH_INSTR;
                     end

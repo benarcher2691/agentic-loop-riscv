@@ -42,19 +42,22 @@ module ALU (
   assign LT  = (in1[31] ^ in2[31]) ? in1[31] : aluMinus[32];
 
   // Shared shifter: right shift with optional sign fill. SLL feeds the
-  // bit-reversed operand through and the output mux reverses the result
-  // (flip32 is pure wiring, so the reversal costs no mux of its own —
-  // the SLL arm simply reads shRight's bits the other way round); its
-  // fill bit is forced 0 (SLL never sign-fills, whatever funct7_5 is).
+  // bit-reversed operand through and the output mux reverses the result;
+  // its fill bit is forced 0 (SLL never sign-fills, whatever funct7_5 is).
+  // The bit reversals are hoisted into continuous assigns ON PURPOSE:
+  // flip32 called inside the ternary/case mapped to ~40 LUT4 per call
+  // site under abc9, while a standalone assign is pure wiring (0 cells).
+  wire [31:0] in1Rev     = flip32(in1);
   wire        isSLL   = (funct3 == 3'b001);
-  wire [31:0] shOp    = isSLL ? flip32(in1) : in1;
+  wire [31:0] shOp    = isSLL ? in1Rev : in1;
   wire        shFill  = isSLL ? 1'b0 : (funct7_5 & in1[31]);
   wire [31:0] shRight = $signed({shFill, shOp}) >>> sh;
+  wire [31:0] shRightRev = flip32(shRight);
 
   always @(*) begin
     case (funct3)
       3'b000:  out = funct7_5 ? aluMinus[31:0] : (in1 + in2);
-      3'b001:  out = flip32(shRight);
+      3'b001:  out = shRightRev;
       3'b010:  out = {31'b0, LT};
       3'b011:  out = {31'b0, LTU};
       3'b100:  out = in1 ^ in2;

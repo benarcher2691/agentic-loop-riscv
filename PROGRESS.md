@@ -263,5 +263,29 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
   > 1. Apply the three fixes above, then `make sim` (all 12 benches, 4693 checks must pass unchanged — `lui_auipc_tb`'s `wrData`/register checks still hold since AUIPC writeback value is unchanged) and `make stat`.
   > 2. If still above 950: (a) merge `ldExt`'s 5-arm case into 3 arms (LB/LBU and LH/LHU share data, `ldFunct3[2]` picks sign/zero fill; est. −10); (b) optionally move the ALU's output flip into `shRight` so SLL/SRL arms merge (est. −12).
   > 3. `make check` fully green (incl. `equiv`), tick the task in `TASKS.md`, append before/after per-module numbers to `PROGRESS.md` (include the ablation findings — they contradict the task hint's estimates and will save the next shrink session hours), commit `task: shrink round 2 — AUIPC through ALU, 10-bit branch/JAL adder`.
-  > 4. Do **not** start the next task (Memory-mapped IO).
+   > 4. Do **not** start the next task (Memory-mapped IO).
+
+- **Shrink the core, round 2** (task 16): started from the interrupted session's RED tree —
+   applied its three documented fixes (drop the `isAUIPC ? pcPlusImm` wrData arm, EXECUTE PC
+   update and `branchTarget` alias onto `pcPlusImm10`) plus moved `pc10`'s declaration above
+   the adder block (iverilog "declaration after use" was the actual compile error). That
+   completed the AUIPC-through-ALU restructure: 1010 → 971 (Processor 451 → 412). Then two
+   more moves landed: ldExt 5-arm case → 3 data arms + fill-bit mux (0 unflattened change),
+   and **LUI through the ALU** (in1 = 0, in2 = Uimm, funct3 forced ADD; wrData loses its
+   isLUI arm): Processor 412 → 382. Final: **941 unflattened** (ALU 485, Processor 382,
+   Memory 51, Decoder 17, Clockworks 6) ≤ 950 goal; pnr 860 LCs / 6 BRAM / 47.62 MHz;
+   4693 checks unchanged; equiv 4000 cycles 0 mismatches.
+   Measured ablations (scratch harness in /tmp, yosys -noflatten per module): (1) ldExt
+   merge saved 0 unflattened — yosys had already merged the shared data across the
+   sign/zero arms (only −8 flattened LC); (2) pre-muxing the ALU's SLL output flip into one
+   shOut case arm cost +1 — the two-arm case is better, abc folds the arm select for free;
+   (3) LUI-through-ALU −30, the real win: a constant-0 arm in aluIn1 folds into the LUT
+   while a 32-bit Uimm arm in wrData does not. Confirmed the interrupted session's ALU
+   floor ≈ 485 (shifter+flips 244, logic 94, subtractor/EQ/LT/LTU 92, ADD 52) — the task
+   hint's "~250 ALU" is unreachable with EQ/LT/LTU as always-on outputs; its
+   ADD-into-subtractor and JAL-link-through-ALU ideas measured as washes/losses.
+   Advice for Memory-mapped IO (next): 941 + ~100 for UART/IO ≈ 1041 < 1150 budget, no
+   shrink needed before starting; the address decode is a bit-22 compare + word-offset
+   muxes, and `mem_addr` is already 10-bit — IO space sits above bit 22 so the RAM decode
+   is unchanged.
 
