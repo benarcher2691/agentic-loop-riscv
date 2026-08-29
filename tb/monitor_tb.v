@@ -133,9 +133,39 @@ module monitor_tb;
     end
   endtask
 
-  // ---- uploaded G routine, assembled with the lib ------------------------
+  // T5(c): a W command split in half — 'W' plus the first 2 address bytes,
+  // then 50 bit-times of dead line (RXD idles high), then the rest. The
+  // monitor's GETBYTE loop must simply wait; the reply's first start bit can
+  // land in the mid-stop of the last data byte, so the receiver is forked
+  // with the sender of the second half (same rule as exchange).
+  task cmd_W_split;
+    input [31:0] addr;
+    input [31:0] len;
+    integer i2;
+    begin
+      txbuf[0] = "W";
+      put_addr_len(addr, len);
+      send_byte(txbuf[0]);          // 'W'
+      send_byte(txbuf[1]);          // addr byte 0
+      send_byte(txbuf[2]);          // addr byte 1 — then silence
+      repeat (50) #(BITNS);
+      fork
+        begin : snd2
+          for (i2 = 3; i2 < 9 + len; i2 = i2 + 1) send_byte(txbuf[i2]);
+        end
+        begin : rcv2
+          recv_byte(rxbuf[0]);
+        end
+      join
+      `CHECK_EQ(rxbuf[0], 8'h4B, "split W (50 bit-times of silence mid-command) replies K")
+    end
+  endtask
+
+  // ---- uploaded G routines, assembled with the lib -----------------------
   // sum = add of the 8 words at 0x400 into 0x420, then RET. Leaf: no push.
-  reg [31:0] MEM [0:15];   // the lib assembles into a module-level array named MEM
+  // T5(c) adds a second routine (words 10..47): clobber EVERY register
+  // except x2 (sp) — including x1 (ra) and x5 — then still return cleanly.
+  reg [31:0] MEM [0:47];   // the lib assembles into a module-level array named MEM
   `include "../lib/riscv_assembly.v"
   integer L0_ = 12;   // word 3 (byte 12): the loop head, hand-counted
   initial begin
@@ -157,6 +187,62 @@ module monitor_tb;
     `CHECK_EQ(MEM[4], 32'h00D585B3, "ADD x11,x11,x13 hand encoding")
     // JALR x0,0(x1): the standard RET word
     `CHECK_EQ(MEM[9], 32'h00008067, "RET hand encoding")
+
+    // ---- T5(c): the register-wrecking routine (words 10..47, 152 bytes) ----
+    // The trick that makes "clobber x1" and "return" compatible: the saved
+    // return address lives in a scratch word at 0x1000, and x1's clobber
+    // value LUI(x1,1) = 0x1000 IS that address — so the final LW x1,0(x1)
+    // reloads the RA through the clobbered register itself. x5's clobber
+    // (0x5000) is pinned explicitly in the checks below. The LED store runs
+    // FIRST so x10/x11 end up clobbered too (0xA000/0xB000).
+    LUI(x10, 32'h00400000);     // word 10: x10 = 0x00400000
+    ADDI(x10, x10, 4);          // word 11: x10 = 0x00400004, the LED word
+    ADDI(x11, x0, 8'h15);       // word 12: 0x15 -> 5'b10101
+    SW(x11, x10, 0);            // word 13: LEDs on
+    LUI(x5, 32'h00001000);      // word 14: x5 = 0x1000, scratch for the RA
+    SW(x1, x5, 0);              // word 15: save the return address
+    LUI(x1, 32'h00001000);      // word 16: clobber x1 -> 0x1000
+    LUI(x3,  32'h00003000);     // words 17..45: clobber x3..x31 to N<<12
+    LUI(x4,  32'h00004000);     // (x2 = sp is the one register left alone)
+    LUI(x5,  32'h00005000);
+    LUI(x6,  32'h00006000);
+    LUI(x7,  32'h00007000);
+    LUI(x8,  32'h00008000);
+    LUI(x9,  32'h00009000);
+    LUI(x10, 32'h0000A000);
+    LUI(x11, 32'h0000B000);
+    LUI(x12, 32'h0000C000);
+    LUI(x13, 32'h0000D000);
+    LUI(x14, 32'h0000E000);
+    LUI(x15, 32'h0000F000);
+    LUI(x16, 32'h00010000);
+    LUI(x17, 32'h00011000);
+    LUI(x18, 32'h00012000);
+    LUI(x19, 32'h00013000);
+    LUI(x20, 32'h00014000);
+    LUI(x21, 32'h00015000);
+    LUI(x22, 32'h00016000);
+    LUI(x23, 32'h00017000);
+    LUI(x24, 32'h00018000);
+    LUI(x25, 32'h00019000);
+    LUI(x26, 32'h0001A000);
+    LUI(x27, 32'h0001B000);
+    LUI(x28, 32'h0001C000);
+    LUI(x29, 32'h0001D000);
+    LUI(x30, 32'h0001E000);
+    LUI(x31, 32'h0001F000);     // word 45
+    LW(x1, x1, 0);              // word 46: x1 = saved RA, via clobbered x1
+    JALR(x0, x1, 0);            // word 47: RET
+    endASM();
+    // Encoding cross-checks for the new routine (hand-assembled):
+    // LUI x10,0x00400: imm20=0x00400|rd=10<<7=0x500|op=0x37
+    `CHECK_EQ(MEM[10], 32'h00400537, "LUI x10,0x00400000 hand encoding")
+    // SW x1,0(x5): rs2=00001 rs1=00101 f3=010 imm=0 op=0100011
+    `CHECK_EQ(MEM[15], 32'h0012A023, "SW x1,0(x5) hand encoding")
+    // LW x1,0(x1): imm=0 rs1=00001 f3=010 rd=00001 op=0000011
+    `CHECK_EQ(MEM[46], 32'h0000A083, "LW x1,0(x1) hand encoding")
+    // LUI x31,0x1F: imm20=0x1F|rd=31<<7=0xF80|op=0x37
+    `CHECK_EQ(MEM[45], 32'h0001FFB7, "LUI x31,0x0001F000 hand encoding")
   end
 
   // ---- test sequence ------------------------------------------------------
@@ -164,7 +250,8 @@ module monitor_tb;
   reg  [7:0] banner [0:11];
   reg  [7:0] b;
   reg  [31:0] words [0:7];
-  reg  [31:0] sum, w;
+  reg  [31:0] sum, w, savedRa;
+  reg  [31:0] snap [1:32];   // register-file snapshot taken by watchClobber
   integer i;
 
   initial begin
@@ -211,6 +298,32 @@ module monitor_tb;
       `CHECK_EQ(w, words[i], "uploaded word reads back unchanged")
     end
 
+    // ---- T5(c): zero-length R — zero data bytes, then a live V ------------
+    // The monitor must send NOTHING for an R of length 0 and go straight
+    // back to GETBYTE. The following V proves both: if any stray byte had
+    // been emitted, it would be consumed as V's first reply byte and the
+    // 'R' check below would fail.
+    cmd_R(32'h00000400, 32'd0);
+    cmd_V;
+
+    // ---- T5(c): zero-length W — K, memory untouched ------------------------
+    cmd_W(32'h00000400, 32'd0);
+    cmd_R(32'h00000400, 32'd32);
+    for (i = 0; i < 8; i = i + 1) begin
+      w = {rxbuf[4*i+3], rxbuf[4*i+2], rxbuf[4*i+1], rxbuf[4*i]};
+      `CHECK_EQ(w, words[i], "zero-length W left memory untouched")
+    end
+
+    // ---- T5(c): split W — command bytes with a 50 bit-time gap -------------
+    // Four bytes 0D F0 C3 A5 (word 0xA5C3F00D) to fresh RAM at 0x430, sent
+    // as 'W' + 2 address bytes, silence, then the rest. Readback proves the
+    // command completed normally despite the dead time.
+    txbuf[9] = 8'h0D; txbuf[10] = 8'hF0; txbuf[11] = 8'hC3; txbuf[12] = 8'hA5;
+    cmd_W_split(32'h00000430, 32'd4);
+    cmd_R(32'h00000430, 32'd4);
+    w = {rxbuf[3], rxbuf[2], rxbuf[1], rxbuf[0]};
+    `CHECK_EQ(w, 32'hA5C3F00D, "split W wrote the word intact")
+
     // G: upload the sum routine (10 words = 40 bytes) to 0x600 via W, call
     // it with G, then R the sum word at 0x420. The routine is a leaf: it
     // clobbers x10-x13 (caller-saved per the monitor convention) but not
@@ -246,6 +359,64 @@ module monitor_tb;
     `CHECK_EQ(rxbuf[1], 8'h00, "LED word byte 1 reads back 0x00")
     `CHECK_EQ(rxbuf[2], 8'h00, "LED word byte 2 reads back 0x00")
     `CHECK_EQ(rxbuf[3], 8'h00, "LED word byte 3 reads back 0x00")
+
+    // ---- T5(c): G a routine that clobbers EVERY register except x2 --------
+    // Upload the 38-word routine (words 10..47 of MEM) to 0x700 and call it.
+    // It lights the LEDs, saves the RA to 0x1000, wrecks x1 and x3..x31 with
+    // LUI garbage (x5 -> 0x5000), reloads the RA through the clobbered x1
+    // and RETs. The monitor must reply K, keep the LEDs, and stay alive.
+    for (i = 0; i < 38; i = i + 1) begin
+      txbuf[9 + 4*i + 0] = MEM[10 + i][ 7: 0];
+      txbuf[9 + 4*i + 1] = MEM[10 + i][15: 8];
+      txbuf[9 + 4*i + 2] = MEM[10 + i][23:16];
+      txbuf[9 + 4*i + 3] = MEM[10 + i][31:24];
+    end
+    cmd_W(32'h00000700, 32'd152);
+    // G it, with a concurrent watcher sampling the register file while the
+    // routine's final LW x1,0(x1) (0x700 + 36*4 = 0x790) is in flight. That
+    // is the only moment every clobber is visible: after the return, the
+    // monitor's own K-reply code runs and re-trashes registers BY DESIGN
+    // (x1 becomes its PUTBYTE link, x5/x9/x10 its helpers) — the convention
+    // says the callee owns everything but sp, so post-return values prove
+    // nothing. The snapshot proves the clobbers; the K reply proves the
+    // return still worked with x1 freshly restored from the wreckage.
+    fork
+      begin : watchClobber
+        integer g2;
+        g2 = 0;
+        while ((dut.processor.PC !== 32'h790) && g2 < 200000) begin
+          @(posedge CLK); #1;
+          g2 = g2 + 1;
+        end
+        `CHECK_EQ(dut.processor.PC, 32'h790,
+                  "watcher caught the routine's final LW x1,0(x1) in flight")
+        for (i = 1; i < 32; i = i + 1) snap[i] = dut.processor.RegisterBank[i];
+      end
+      begin : runClobberG
+        txbuf[0] = "G";
+        put_addr_len(32'h00000700, 32'd0);
+        exchange(5, 1);
+      end
+    join
+    `CHECK_EQ(rxbuf[0], 8'h4B, "clobber-G replies K after the routine returns")
+    `CHECK_EQ(LEDS, 5'b10101, "clobber-G lit the LEDs before wrecking the registers")
+    `CHECK_EQ(snap[1], 32'h00001000,
+              "x1 clobbered to 0x1000 at the routine's last load (RA long gone)")
+    `CHECK_EQ(snap[2], 32'h1800, "sp (x2) untouched by the clobber-G")
+    for (i = 3; i < 32; i = i + 1)
+      `CHECK_EQ(snap[i], i << 12, "xN holds its LUI clobber N<<12 at the routine's last load")
+    `CHECK_EQ(dut.processor.RegisterBank[2], 32'h1800,
+              "sp still 0x1800 after the whole exchange: no stack drift")
+    // The RA the routine saved at 0x1000: a real monitor call-site address,
+    // not the scratch word and not 0 — the K reply proves the restore used it.
+    cmd_R(32'h00001000, 32'd4);
+    savedRa = {rxbuf[3], rxbuf[2], rxbuf[1], rxbuf[0]};
+    `CHECK(savedRa != 32'h1000 && savedRa != 32'd0,
+           "saved RA is a monitor call-site address, not the scratch word")
+    cmd_R(32'h00400004, 32'd4);
+    `CHECK_EQ(rxbuf[0], 8'h15, "LED word byte 0 still 0x15 after the clobber-G")
+    // Live V: the monitor survived the destruction of every register but sp.
+    cmd_V;
 
     // Unknown command: 'X' replies '?'.
     txbuf[0] = "X";

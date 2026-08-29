@@ -40,10 +40,12 @@ module jumps_tb;
   wire        mem_rstrb;
 
   // Bench memory model, same contract as rtl/Memory: synchronous read of
-  // MEM[addr[9:2]] on the clock edge while the strobe is high.
-  reg [31:0] MEM [0:255];
+  // MEM[addr[12:2]] on the clock edge while the strobe is high. 2048 words
+  // = the full 8 KB PC space (the RAM itself is 6 KB; the extra top 2 KB
+  // exists only so the T5(e) PC-wrap phase can fetch code at 0x1FF8).
+  reg [31:0] MEM [0:2047];
   reg [31:0] mem_rdata;
-  always @(posedge clk) if (mem_rstrb) mem_rdata <= MEM[mem_addr[9:2]];
+  always @(posedge clk) if (mem_rstrb) mem_rdata <= MEM[mem_addr[12:2]];
 
   Processor dut (.clk(clk), .resetn(resetn), .mem_addr(mem_addr),
                  .mem_rdata(mem_rdata), .mem_rstrb(mem_rstrb));
@@ -174,6 +176,40 @@ module jumps_tb;
     // The assembler macros produced exactly the hand-assembled words.
     for (w = 0; w < 16; w = w + 1)
       `CHECK_EQ(MEM[w], expWord(w), "assembler word matches the hand encoding")
+
+    // ==== T5(e): backward JAL across the 8 KB PC wrap (mod 8192) ===========
+    // The PC is architecturally 13 bits: the shared next-PC adder sums
+    // pc13 + Jimm[12:0] mod 8192. A JAL at 0 with offset -8 drives that sum
+    // NEGATIVE (-8), and the hardware must land on (0 - 8) mod 8192 =
+    // 0x1FF8 — the last instructions of the 8 KB PC space, placed high via
+    // memPC. Every word in between is poisoned with EBREAK so a mis-target
+    // halts visibly instead of executing X.
+    for (w = 16; w < 2046; w = w + 1) MEM[w] = 32'h00100073;  // EBREAK poison
+    memPC = 0;
+    JAL(x0, -8);            // word 0: 0 + (-8) must wrap to 0x1FF8
+    endASM();
+    memPC = 32'h1FF8;
+    ADDI(x28, x0, 42);      // the wrapped-to target (x28: untouched by prog 1)
+    EBREAK();
+    endASM();
+    `CHECK_EQ(MEM[0],    32'hFF9FF06F, "jal x0,-8 matches the hand encoding")
+    `CHECK_EQ(MEM[2046], 32'h02A00E13, "addi x28,x0,42 matches the hand encoding")
+
+    resetn = 0;
+    repeat (3) begin @(posedge clk); #1; end
+    `CHECK_EQ(dut.PC, 32'd0, "PC held at 0 during re-reset (wrap phase)")
+    resetn = 1;
+
+    pollExecute(32'd0);
+    `CHECK_EQ(dut.jumpTarget, 32'h1FF8, "JAL target = (0 - 8) mod 8192 = 0x1FF8")
+    @(posedge clk); #1;
+    `CHECK_EQ(dut.PC, 32'h1FF8, "backward JAL crossed the PC wrap to 0x1FF8")
+    pollExecute(32'h1FF8);
+    @(posedge clk); #1;
+    `CHECK_EQ(dut.PC, 32'h1FFC, "wrapped target's ADDI executed, PC at its EBREAK")
+    repeat (5) begin @(posedge clk); #1; end
+    `CHECK_EQ(dut.PC, 32'h1FFC, "halted at the EBREAK above the wrap")
+    `CHECK_EQ(dut.RegisterBank[28], 32'd42, "the instruction at 0x1FF8 ran: x28 = 42")
 
     `DONE
   end

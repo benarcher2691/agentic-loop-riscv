@@ -9,7 +9,8 @@
 //   word 4 (16): AUIPC x8, 0xFFFFF000  x8 = 16 + 0xFFFFF000  = 0xFFFFF010
 //   word 5 (20): AUIPC x9, 0x00001000  x9 = 20 + 0x1000      = 0x00001014
 //   word 6 (24): LUI   x0, 0xFFFFF000  x0 stays 0 (rd = x0 dropped)
-//   word 7 (28): EBREAK
+//   word 7 (28): AUIPC x0, 0x00001000  x0 stays 0 (rd = x0 dropped; T5 d)
+//   word 8 (32): EBREAK
 //
 // x7 and x9 use the SAME Uimm at PCs 12 and 20: the results differ by
 // exactly the PC difference (0x101C - 0x1014 = 8), which isolates the
@@ -43,7 +44,8 @@ module lui_auipc_tb;
     AUIPC(x8, 32'hFFFFF000);   // word 4: at PC 16, Uimm bit 31 set
     AUIPC(x9, 32'h00001000);   // word 5: same Uimm as word 3, at PC 20
     LUI(x0, 32'hFFFFF000);     // word 6: write to x0 must be dropped
-    EBREAK();                  // word 7
+    AUIPC(x0, 32'h00001000);   // word 7: AUIPC to x0 must be dropped too
+    EBREAK();                  // word 8
     endASM();
   end
 
@@ -86,7 +88,8 @@ module lui_auipc_tb;
       4: expWord = 32'hFFFFF417;  // auipc x8,0xFFFFF  (rd=8<<7 = 0x400)
       5: expWord = 32'h00001497;  // auipc x9,0x1      (rd=9<<7 = 0x480)
       6: expWord = 32'hFFFFF037;  // lui   x0,0xFFFFF  (rd=0)
-      7: expWord = 32'h00100073;  // ebreak
+      7: expWord = 32'h00001017;  // auipc x0,0x1      (rd=0)
+      8: expWord = 32'h00100073;  // ebreak
       default: expWord = 32'h00000013;
     endcase
   endfunction
@@ -118,11 +121,11 @@ module lui_auipc_tb;
     @(posedge clk); #1;
     `CHECK_EQ(dut.PC, 32'd16, "AUIPC: PC advanced by 4")
 
-    // Free-run into the final EBREAK at 28.
-    waitHalt(32'd28);
+    // Free-run into the final EBREAK at 32.
+    waitHalt(32'd32);
     repeat (5) begin
       @(posedge clk); #1;
-      `CHECK_EQ(dut.PC, 32'd28, "PC frozen at the EBREAK")
+      `CHECK_EQ(dut.PC, 32'd32, "PC frozen at the EBREAK")
     end
     `CHECK_EQ(mem_rstrb, 1'b0, "no fetch strobe while halted")
 
@@ -135,9 +138,10 @@ module lui_auipc_tb;
     `CHECK_EQ(dut.RegisterBank[9] - dut.RegisterBank[7], 32'd8,
               "same Uimm at PCs 12 and 20: results differ by exactly the PC difference")
     `CHECK_EQ(dut.RegisterBank[0], 32'd0, "LUI to x0 dropped: x0 still 0")
+    `CHECK_EQ(dut.RegisterBank[0], 32'd0, "AUIPC to x0 dropped: x0 still 0 (PC + Uimm discarded)")
 
     // The assembler macros produced exactly the hand-assembled words.
-    for (w = 0; w < 8; w = w + 1)
+    for (w = 0; w < 9; w = w + 1)
       `CHECK_EQ(MEM[w], expWord(w), "assembler word matches the hand encoding")
 
     `DONE

@@ -57,7 +57,8 @@ module processor_tb;
   //   23: ADDI (x23, x0,   33)  x23 = 33
   //   24: SRL  (x24, x1,  x23)  x24 = 5>>(33&31) = 5>>1 = 2
   //   25: LUI  (x25, 0x12345)   x25 = 0x12345000 (LUI since the U-type task)
-  //   26: EBREAK()              halt, PC frozen at 104
+  //   26: ADD  (x0,  x1,  x2)   x0 stays 0 (rd = x0 dropped; T5 d)
+  //   27: EBREAK()              halt, PC frozen at 108
   `include "riscv_assembly.v"
   initial begin
     ADDI(x1, x0, 5);
@@ -86,6 +87,7 @@ module processor_tb;
     ADDI(x23, x0, 33);
     SRL(x24, x1, x23);
     LUI(x25, 32'h12345000);  // lib LUI takes the final rd value -> lui x25,0x12345
+    ADD(x0, x1, x2);         // word 26: write to x0 must be dropped
     EBREAK();
     endASM();
   end
@@ -120,7 +122,8 @@ module processor_tb;
       23: expWord = 32'h02100B93; // addi x23,x0,33
       24: expWord = 32'h0170DC33; // srl  x24,x1,x23
       25: expWord = 32'h12345CB7; // lui  x25,0x12345
-      26: expWord = 32'h00100073; // ebreak
+      26: expWord = 32'h00208033; // add  x0,x1,x2 (rd=0)
+      27: expWord = 32'h00100073; // ebreak
       default: expWord = 32'h00000013;
     endcase
   endfunction
@@ -154,12 +157,12 @@ module processor_tb;
       `CHECK_EQ(dut.PC, 4*(i+1), "PC advanced by 4 out of EXECUTE")
     end
 
-    // Free-run the remaining instructions (words 9..26, 3 cycles each) into
-    // the EBREAK halt at word 26.
+    // Free-run the remaining instructions (words 9..27, 3 cycles each) into
+    // the EBREAK halt at word 27.
     repeat (60) @(posedge clk);
     #1;
     `CHECK_EQ(mem_rstrb, 1'b0, "no fetch strobe while halted")
-    `CHECK_EQ(dut.PC, 32'd104, "halted at the EBREAK address 26*4")
+    `CHECK_EQ(dut.PC, 32'd108, "halted at the EBREAK address 27*4")
     `CHECK_EQ(dut.state, 2'd2, "halted in EXECUTE")
 
     pc0    = dut.PC;
@@ -173,7 +176,7 @@ module processor_tb;
 
     // Register file results, by hierarchical reference. Expected values are
     // hand-computed from x1 = 5, x2 = 12, x5 = -7 = 0xFFFFFFF9.
-    `CHECK_EQ(dut.RegisterBank[0],  32'd0,          "x0 still 0 after ADDI x0,x0,5")
+    `CHECK_EQ(dut.RegisterBank[0],  32'd0,          "x0 still 0 after ADDI x0,x0,5 and ADD x0,x1,x2")
     `CHECK_EQ(dut.RegisterBank[1],  32'd5,          "x1 = 5")
     `CHECK_EQ(dut.RegisterBank[2],  32'd12,         "x2 = 5 + 7 = 12")
     `CHECK_EQ(dut.RegisterBank[3],  32'd9,          "x3 = 12 - 3 = 9 (negative imm)")
@@ -202,7 +205,7 @@ module processor_tb;
     `CHECK_EQ(dut.RegisterBank[1], 32'd5, "x1 = 5 read hierarchically (x1 mirror port removed)")
 
     // The assembler macros produced exactly the hand-assembled words.
-    for (w = 0; w < 27; w = w + 1)
+    for (w = 0; w < 28; w = w + 1)
       `CHECK_EQ(MEM[w], expWord(w), "assembler word matches the hand encoding")
 
     `DONE

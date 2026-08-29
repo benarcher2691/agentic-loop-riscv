@@ -29,7 +29,11 @@ module UartRx #(
     reg [1:0] sync   = 2'b11;   // two-flop synchroniser on rx
     reg       rxsOld = 1'b1;    // previous synchronised level (edge detect)
     reg [1:0] state  = S_IDLE;
-    reg [6:0] count  = 7'd0;    // position within a bit (max 104)
+    // Position within a bit, 0..BIT_CLKS-1. Sized from BIT_CLKS so any
+    // CLK_HZ/BAUD pairing fits (104 clocks/bit at 12 MHz/115200 -> 7 bits);
+    // $clog2(104) = 7, so this is the same [6:0] it always was — no
+    // behaviour change, just no silent truncation if the parameters move.
+    reg [$clog2(BIT_CLKS)-1:0] count = 0;
     reg [2:0] bitIdx = 3'd0;
     reg [7:0] shreg  = 8'd0;
 

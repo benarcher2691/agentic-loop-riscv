@@ -641,3 +641,15 @@
    address, not the label's) — the three-way check caught it. 15059 → 15635 checks in 18 benches;
    pnr 1136/1280, 37.72 MHz, equiv clean.
 
+- **T1: x1 debug mirror removed** (phase 5, T1): port + 32-bit shadow + both duplicated write arms
+   deleted (processor.v port list, EXECUTE and LOAD arms; soc.v wire + connection); 8 benches rewired
+   from `.x1(x1_out)` to hierarchical `RegisterBank[1]` reads (4 CHECKs re-targeted, count held at
+   15635). All green: 18 benches, lint, equiv, hwreset, pnr 1141/1280, Fmax 38.45 MHz.
+   **The ≥25 LUT4 acceptance line was a wrong premise, now measured twice**: the mirror is 32 FFs,
+   and iCE40 FFs pack into LCs beside their LUTs — real saving is 2 LUT4 unflattened (1149→1147,
+   Processor 497→495) + 5 pnr LCs. The audit's "~30 LUT" was a grep estimate counting FFs as LUTs.
+   Advice for T2 (next): you inherit only 3 LUT4 unflattened headroom (1147/1150) — run a scratch
+   yosys ablation before editing, and remember the halt logic can share the existing ALU comparator
+   rather than adding one. Also in this commit: the previous session's uncommitted file-rotation
+   housekeeping (TASKS/TASKS-done/PROGRESS-archive).
+

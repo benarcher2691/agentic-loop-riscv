@@ -245,6 +245,39 @@ module stores_tb;
     for (w = 0; w < 39; w = w + 1)
       `CHECK_EQ(MEM[w], expWord(w), "assembler word matches the hand encoding")
 
+    // ==== T5(f): store to the word at PC+4, then execute it ================
+    // The SW at 0x10 stores a fresh instruction word into 0x14 — its own
+    // PC + 4. The 3-state FSM has no prefetch: the fetch of 0x14 only
+    // starts AFTER the store committed on the edge leaving EXECUTE, so the
+    // newly stored instruction must execute. Word 5 is pre-loaded with a
+    // stale "addi x9,x0,99": a prefetch racing the store would execute the
+    // stale word and x9 would come out 99 instead of 55.
+    MEM[5] = 32'h06300493;    // stale trap: addi x9,x0,99 (jumps_tb-verified form)
+    memPC = 0;
+    LUI (x5, 32'h03700000);   // 0: x5 = 0x03700000
+    ADDI(x5, x5, 32'h493);    // 1: x5 = 0x03700493 = addi x9,x0,55
+    ADDI(x6, x0, 20);         // 2: x6 = 20 = the SW's PC + 4
+    ADDI(x7, x0, 1);          // 3: flow marker
+    SW  (x5, x6, 0);          // 4: MEM[0x14] <- 0x03700493 (store to PC+4)
+    memPC = 24;               // skip word 5: the SW writes it at runtime
+    EBREAK();                 // 6
+    endASM();
+    `CHECK_EQ(MEM[4], 32'h00532023, "sw x5,0(x6) matches the hand encoding")
+
+    resetn = 0;
+    repeat (3) begin @(posedge clk); #1; end
+    `CHECK_EQ(dut.PC, 32'd0, "PC held at 0 during re-reset (self-modify phase)")
+    resetn = 1;
+    repeat (40) begin @(posedge clk); #1; end
+    `CHECK_EQ(dut.PC, 32'h18, "halted at the EBREAK at 0x18")
+    `CHECK_EQ(dut.state, 2'd2, "halted in EXECUTE")
+    `CHECK_EQ(MEM[5], 32'h03700493, "the SW really stored the new word at PC+4")
+    `CHECK_EQ(dut.RegisterBank[9], 32'd55,
+              "the newly stored instruction executed: x9 = 55, not the stale 99")
+    `CHECK_EQ(dut.RegisterBank[7], 32'd1, "sequential flow reached the SW")
+    `CHECK_EQ(dut.RegisterBank[5], 32'h03700493, "x5 held the injected word")
+    `CHECK_EQ(dut.RegisterBank[6], 32'd20, "x6 = the SW's PC + 4")
+
     `DONE
   end
 endmodule

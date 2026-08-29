@@ -294,6 +294,108 @@ module cycle_tb;
     `CHECK_EQ(dut.RegisterBank[5], 32'd5,
               "RDCYCLE still returns the low word (EXECUTE at cycle 5)")
 
+    // ==== C8: the carry into cycleh must watch ALL 32 low bits ============
+    // Deposit 0x7FFFFFFE and step 3 edges: 0x7FFFFFFF -> 0x80000000 ->
+    // 0x80000001. Bit 31 turns on here, but bits [30:0] are all ones at
+    // 0x7FFFFFFF — a carry wired as &cycles[30:0] would bump cycleh on the
+    // second edge; the real &cycles must not (the low word is only halfway
+    // through its range). cycleh must come out still 5.
+    memPC = 0;
+    EBREAK();
+    endASM();
+    fillEbreak;
+    startRun;
+    waitHalt;
+    `CHECK_EQ(dut.PC, 32'd0, "halted at C8's EBREAK");
+    dut.cycles = 32'h7FFFFFFE;
+    dut.cycleh = 32'd5;
+    @(posedge clk); #1;   // 7FFFFFFE -> 7FFFFFFF
+    `CHECK_EQ(dut.cycles, 32'h7FFFFFFF, "low word one short of half wrap")
+    `CHECK_EQ(dut.cycleh, 32'd5,        "no carry while bit 31 is still 0")
+    @(posedge clk); #1;   // 7FFFFFFF -> 80000000: bits [30:0] all ones here
+    `CHECK_EQ(dut.cycles, 32'h80000000, "low word crossed 0x7FFFFFFF into 0x80000000")
+    `CHECK_EQ(dut.cycleh, 32'd5,        "NO carry at 0x7FFFFFFF: &cycles needs all 32 bits")
+    @(posedge clk); #1;   // 80000000 -> 80000001
+    `CHECK_EQ(dut.cycles, 32'h80000001, "low word counting past 0x80000000")
+    `CHECK_EQ(dut.cycleh, 32'd5,        "high word still untouched after 3 edges")
+
+    // ==== C9: a CSR read whose EXECUTE lands exactly on the wrap cycle ====
+    //   word 0: RDCYCLE(x5)    word 4: RDCYCLEH(x6)    word 8: EBREAK
+    // The counter value a read returns is the one live DURING the EXECUTE
+    // cycle (latched at the edge leaving EXECUTE). Deposit 0xFFFFFFFE right
+    // after reset release: edge 1 -> 0xFFFFFFFF (FETCH_REGS), edge 2 -> 0
+    // with the carry into cycleh (this edge ENTERS EXECUTE of word 0), so
+    // word 0's EXECUTE cycle runs with cycles == 0 and x5 must be 0 — the
+    // wrapped value, not 0xFFFFFFFF. Word 4's EXECUTE then reads cycleh = 6.
+    memPC = 0;
+    RDCYCLE(x5);
+    RDCYCLEH(x6);
+    EBREAK();
+    endASM();
+    fillEbreak;
+    resetn = 0;
+    repeat (3) begin @(posedge clk); #1; end
+    `CHECK_EQ(dut.PC, 32'd0, "PC held at 0 during reset (C9)")
+    resetn = 1;
+    dut.cycles = 32'hFFFFFFFE;   // one edge short of the wrap
+    dut.cycleh = 32'd5;
+    waitHalt;
+    `CHECK_EQ(dut.PC, 32'd8, "halted at C9's EBREAK")
+    `CHECK_EQ(dut.RegisterBank[5], 32'd0,
+              "RDCYCLE whose EXECUTE sits on the wrap cycle returns the wrapped 0")
+    `CHECK_EQ(dut.RegisterBank[6], 32'd6,
+              "the carry landed: RDCYCLEH right after the wrap returns 5 + 1")
+
+    // ==== C10: ECALL, CSRRC and CSRRxI halt — permanently ================
+    //  a) ecall = {12'h000, 5'd0, 3'b000, 5'd0, 7'b1110011} = 0x00000073
+    //  b) csrrc x5,cycle,x0 = {12'hC00, 5'd0, 3'b011, 5'd5, 7'b1110011}
+    //                       = 0xC0000000|3<<12|5<<7|0x73 = 0xC0001AF3
+    //  c) csrrwi x5,cycle,1 = {12'hC00, 5'd1(zimm), 3'b101, 5'd5, 7'b1110011}
+    //                       = 0xC0000000|1<<15|5<<12|5<<7|0x73 = 0xC000D2F3
+    // Each must halt AT ITSELF and still be halted 10 cycles later (PC and
+    // state frozen — the halt is permanent, not a one-cycle stall).
+    memPC = 0;
+    RAW(32'h00000073);                // a) ecall, at byte 0
+    EBREAK();
+    endASM();
+    fillEbreak;
+    `CHECK_EQ(MEM[0], 32'h00000073, "ecall matches the hand encoding")
+    startRun;
+    waitHalt;
+    `CHECK_EQ(dut.PC, 32'd0, "ECALL halts at itself")
+    `CHECK_EQ(dut.state, 2'd2, "ECALL halt sits in EXECUTE")
+    repeat (10) begin @(posedge clk); #1; end
+    `CHECK_EQ(dut.PC, 32'd0, "ECALL halt is permanent: PC frozen 10 cycles later")
+    `CHECK_EQ(dut.state, 2'd2, "ECALL halt is permanent: state frozen")
+
+    memPC = 0;
+    ADDI(x5, x0, 7);
+    RAW(32'hC0001AF3);                // b) csrrc x5,cycle,x0, at byte 4
+    EBREAK();
+    endASM();
+    fillEbreak;
+    `CHECK_EQ(MEM[1], 32'hC0001AF3, "csrrc x5,cycle,x0 matches the hand encoding")
+    startRun;
+    waitHalt;
+    `CHECK_EQ(dut.PC, 32'd4, "CSRRC (funct3 011) halts at itself")
+    `CHECK_EQ(dut.RegisterBank[5], 32'd7, "CSRRC wrote nothing before halting")
+    repeat (10) begin @(posedge clk); #1; end
+    `CHECK_EQ(dut.PC, 32'd4, "CSRRC halt is permanent: PC frozen 10 cycles later")
+
+    memPC = 0;
+    ADDI(x5, x0, 7);
+    RAW(32'hC000D2F3);                // c) csrrwi x5,cycle,zimm=1, at byte 4
+    EBREAK();
+    endASM();
+    fillEbreak;
+    `CHECK_EQ(MEM[1], 32'hC000D2F3, "csrrwi x5,cycle,1 matches the hand encoding")
+    startRun;
+    waitHalt;
+    `CHECK_EQ(dut.PC, 32'd4, "CSRRWI (funct3 101, zimm in rs1) halts at itself")
+    `CHECK_EQ(dut.RegisterBank[5], 32'd7, "CSRRWI wrote nothing before halting")
+    repeat (10) begin @(posedge clk); #1; end
+    `CHECK_EQ(dut.PC, 32'd4, "CSRRWI halt is permanent: PC frozen 10 cycles later")
+
     `DONE
   end
 endmodule
