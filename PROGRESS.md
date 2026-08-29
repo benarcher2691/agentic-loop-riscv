@@ -10,33 +10,6 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
 
    module to include into.
 
-- **Handoff captured by loop.sh — iteration 2 ended without ticking its task (tree: TIMEOUT). The session's last message, verbatim:**
-
-  > The ldst program's misaligned cases (LH/LHU at offsets 1/3, SH at 13/15) now halt mid-`G`. Per the task I'll remove them and replace with aligned coverage of equal strength (LH/LHU from the second pattern word, SH pairs on a second word with a different value). First let me check the `LI` macro's expansion rule (word counts feed the hand-encoding cross-check indices) and scan `stores_tb` for misaligned stores:
-  > `LI` confirmed: 1 word when the value fits signed 12 bits, else LUI (+ADDI only if low 12 bits ≠ 0) — so `LI(x19, 32'h8765)` = 2 words. The stores_tb grep came back empty — checking its actual formatting:
-  > `stores_tb` uses `SB  (` spacing — its SH offsets are all even (8/10/20/22) and bytes are never misaligned, so it's safe. Now the hwprogs ldst edits:
-   > Now the expectation block for the new aligned coverage:
-
-- **T2: halt on bad data addresses** (phase 5, T2): the iteration-2 handoff had already finished
-   the engineering (RTL halt logic, badaddr_tb, hwprogs ldst rework) and the tree was green —
-   this session verified every acceptance line and did the tick/commit. RTL: `badAddr` gates
-   `mem_rstrb`/`mem_wmask` AND halts in EXECUTE (arm ordered after SYSTEM, before isLoad, so
-   `ldOff` is never latched on a bad access). The halt comparators cost +11 LUT4 unflattened
-   (1147 → 1158) and +22 pnr LCs (1141 → 1163); Ben raised LC_BUDGET 1150 → 1180 for exactly
-   this (99e5ede), so the budget question is settled — T3 inherits ~22 LUT4 headroom.
-   Fmax 38.45 → 34.63 MHz, still 2.9× margin. 15635 → 15823 checks in 19 benches (badaddr_tb
-   = 188), equiv clean. Also in this commit: another round of file rotation (hwprogs entry →
-   TASKS-done, two old PROGRESS entries → PROGRESS-archive).
-   Advice    for T3 (exact-match IO decode, next): (1) the misalign term deliberately ignores
-   bit 22 — IO-space misaligned accesses halt via misalign (badaddr cases 12/18), while
-   unmapped ALIGNED IO offsets are T3's job; (2) the SOC's LED-word read is currently the
-   ioRdata *default* arm — exact-match decode replaces that default with 32'd0, so the edit
-   may be roughly LUT-neutral, but ablate first and remember ledReg's declaration must stay
-   above the read-path always block (iverilog bind order); (3) the badaddr bench's memory
-   model (poison fill + canaries + X/vanish semantics matching rtl/Memory) is a good template
-   for fault-injection benches; (4) `tRun`'s reset-preserves-registers trick lets one bench
-   cover many permanent-halt cases without re-elaboration.
-
 - **T3: exact-match IO decode** (phase 5, T3): `rtl/soc.v` decodes the four IO words by
    equality on `mem_addr[5:2]`; read default is now `32'd0` (LEDS read is an explicit
    `ioLeds` arm); `storeNow` wire deleted. **The load-bearing contract decision: the UART
@@ -123,4 +96,35 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    equiv run ~150-200k cycles: the W+R+G sequence above costs ~2 ms of UART time ≈ 24k cycles at
    12 MHz, well inside budget; (5) FAST_SIM is defined for equiv — check what that changes in
    Clockworks before trusting cycle counts.
+
+- **Handoff captured by loop.sh — iteration 7 ended without ticking its task (tree: TIMEOUT). The session's last message, verbatim:**
+
+  > The netlist receiver fires on a spurious negedge ~10 µs before each real start bit. Let me log every value event on both TXD lines around the first occurrence:
+  > Event flood — let me window and cap the logging:
+  > Time-literal bug — literals are in ns, I wrote ms. Fixing:
+  > **Root cause found.** Probe 3 nails it:
+  > 
+  > ```
+  > t=92626000 TXD_r=1 TXD_s=0   <- netlist TXD glitches low for ONE DELTA
+  > t=92626000 TXD_r=1 TXD_s=1   <- ...and back, same time step
+  > t=102792000 TXD_r=0 TXD_s=1  <- real start bit: netlist lags one delta
+  > ```
+  > 
+   > The provided emitter's combinational TXD (`data[0] | !(|data)`, re-factored by yosys into a multi-level LUT tree) produces a **sub-clock hazard glitch at frame end in the gate-level netlist only** — invisible to the clock-sampled port check (`mismatches=0`), but a real falling edge to a negedge-triggered receiver, which then samples one bit-time early and decodes garbage. The RTL is clean (atomic 10-bit reg update). The emitter is do-not-edit, and this transient can't corrupt a real 115200-baud link — so the correct fix is in the bench: the serial receivers must model a real UART's **start-bit validation** (re-sample half a bit into the "start" edge; if the line is back high, it was noise). That keeps every assertion intact while making the receivers faithful hardware models:
+
+- **T6: equiv drives the SoC** (phase 5, T6): the iteration-7 handoff had finished the engineering
+   (full `tools/equiv_tb.v` rewrite, +283 lines, plus the file rotation) and died before
+   verification; this session verified every acceptance line and did the tick/commit. The driven
+   session (banner, V, W 0x15→0x400004, R, 3-instruction G at 0x500 with code+data readbacks, live
+   V) feeds the SAME RXD into both dies; one serial receiver per DUT, start-bit-validated, and
+   every reply byte-compared RTL vs netlist. The start-bit validation is the load-bearing idea:
+   the netlist TXD glitches low for one delta at frame end (emitter's combinational output
+   re-factored by yosys; the RTL's atomic 10-bit reg update never glitches) — a bare `@(negedge)`
+   receiver decodes the frame one bit-time early, so the receiver must re-sample half a bit into
+   every falling edge like a real UART. Assertions: mism=0 over 150000 cycles, txd_edges 241>200,
+   led_changes 1, final LEDS 5'b10101 on both, 84 checks in build/equiv.log. `make equiv` = 45 s
+   (budget 90 s). Budgets unchanged (1165 unflattened, 1175 pnr, 33.20 MHz); sim total unchanged
+   16105 in 23 benches (equiv_tb lives in tools/, its checks count in the equiv log only).
+   **That was the last unchecked task in TASKS.md** — the next session should reply `ALL TASKS
+   DONE` unless new tasks are added.
 

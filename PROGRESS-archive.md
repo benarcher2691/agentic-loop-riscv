@@ -653,3 +653,30 @@
    rather than adding one. Also in this commit: the previous session's uncommitted file-rotation
    housekeeping (TASKS/TASKS-done/PROGRESS-archive).
 
+- **Handoff captured by loop.sh — iteration 2 ended without ticking its task (tree: TIMEOUT). The session's last message, verbatim:**
+
+  > The ldst program's misaligned cases (LH/LHU at offsets 1/3, SH at 13/15) now halt mid-`G`. Per the task I'll remove them and replace with aligned coverage of equal strength (LH/LHU from the second pattern word, SH pairs on a second word with a different value). First let me check the `LI` macro's expansion rule (word counts feed the hand-encoding cross-check indices) and scan `stores_tb` for misaligned stores:
+  > `LI` confirmed: 1 word when the value fits signed 12 bits, else LUI (+ADDI only if low 12 bits ≠ 0) — so `LI(x19, 32'h8765)` = 2 words. The stores_tb grep came back empty — checking its actual formatting:
+  > `stores_tb` uses `SB  (` spacing — its SH offsets are all even (8/10/20/22) and bytes are never misaligned, so it's safe. Now the hwprogs ldst edits:
+   > Now the expectation block for the new aligned coverage:
+
+- **T2: halt on bad data addresses** (phase 5, T2): the iteration-2 handoff had already finished
+   the engineering (RTL halt logic, badaddr_tb, hwprogs ldst rework) and the tree was green —
+   this session verified every acceptance line and did the tick/commit. RTL: `badAddr` gates
+   `mem_rstrb`/`mem_wmask` AND halts in EXECUTE (arm ordered after SYSTEM, before isLoad, so
+   `ldOff` is never latched on a bad access). The halt comparators cost +11 LUT4 unflattened
+   (1147 → 1158) and +22 pnr LCs (1141 → 1163); Ben raised LC_BUDGET 1150 → 1180 for exactly
+   this (99e5ede), so the budget question is settled — T3 inherits ~22 LUT4 headroom.
+   Fmax 38.45 → 34.63 MHz, still 2.9× margin. 15635 → 15823 checks in 19 benches (badaddr_tb
+   = 188), equiv clean. Also in this commit: another round of file rotation (hwprogs entry →
+   TASKS-done, two old PROGRESS entries → PROGRESS-archive).
+   Advice    for T3 (exact-match IO decode, next): (1) the misalign term deliberately ignores
+   bit 22 — IO-space misaligned accesses halt via misalign (badaddr cases 12/18), while
+   unmapped ALIGNED IO offsets are T3's job; (2) the SOC's LED-word read is currently the
+   ioRdata *default* arm — exact-match decode replaces that default with 32'd0, so the edit
+   may be roughly LUT-neutral, but ablate first and remember ledReg's declaration must stay
+   above the read-path always block (iverilog bind order); (3) the badaddr bench's memory
+   model (poison fill + canaries + X/vanish semantics matching rtl/Memory) is a good template
+   for fault-injection benches; (4) `tRun`'s reset-preserves-registers trick lets one bench
+   cover many permanent-halt cases without re-elaboration.
+
