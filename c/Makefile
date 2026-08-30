@@ -21,7 +21,7 @@ run: build
 build: $(BUILD)
 	$(CC) $(CFLAGS) -T link.ld -o $(BUILD)/$(PROG).elf start.S rvc.c examples/$(PROG).c $(LIBGCC)
 	@$(OBJCOPY) -O binary $(BUILD)/$(PROG).elf $(BUILD)/$(PROG).bin
-	@python3 tobin2hex.py $(BUILD)/$(PROG).bin $(BUILD)/cprog.hex
+	@python3 tobin2hex.py $(BUILD)/$(PROG).bin $(BUILD)/cprog.hex 1536
 	@sz=$$(wc -c < $(BUILD)/$(PROG).bin); echo "$(PROG): $$sz bytes / 6144"; test $$sz -le 6144
 	@echo "disasm: $(BUILD)/$(PROG).lst"; $(CC:gcc=objdump) -d $(BUILD)/$(PROG).elf > $(BUILD)/$(PROG).lst
 
