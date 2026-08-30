@@ -12,7 +12,7 @@ CFLAGS  := -march=rv32i -mabi=ilp32 -Os -ffreestanding -nostdlib -fno-builtin -W
 # pure integer routines, safe bare-metal.
 LIBGCC  := $(shell $(CC) $(CFLAGS) -print-libgcc-file-name)
 
-.PHONY: run build hw clean
+.PHONY: run build hw hwin inputtest clean
 run: build
 	@iverilog -g2012 -Wall -Wno-timescale -o $(BUILD)/csim.vvp -s csim csim.v $(RTL)
 	@echo "=== $(PROG) output ==="
@@ -26,6 +26,13 @@ build: $(BUILD)
 	@echo "disasm: $(BUILD)/$(PROG).lst"; $(CC:gcc=objdump) -d $(BUILD)/$(PROG).elf > $(BUILD)/$(PROG).lst
 
 # hardware: build a returning, 0x400-linked variant and upload+run it via the monitor
+hwin: $(BUILD)   ## interactive: upload the returning variant and relay your keyboard <-> the program
+	$(CC) $(CFLAGS) -T link_upload.ld -o $(BUILD)/$(PROG)_hw.elf start_upload.S rvc.c examples/$(PROG).c $(LIBGCC)
+	@$(OBJCOPY) -O binary $(BUILD)/$(PROG)_hw.elf $(BUILD)/$(PROG)_hw.bin
+	@python3 tobin2hex.py $(BUILD)/$(PROG)_hw.bin $(BUILD)/$(PROG)_hw.hex
+	@echo "=== $(PROG) on hardware (type your input; Ctrl-C to stop) ==="
+	python3 ../tools/hw.py runi $(BUILD)/$(PROG)_hw.hex
+
 hw: $(BUILD)
 	$(CC) $(CFLAGS) -T link_upload.ld -o $(BUILD)/$(PROG)_hw.elf start_upload.S rvc.c examples/$(PROG).c $(LIBGCC)
 	@$(OBJCOPY) -O binary $(BUILD)/$(PROG)_hw.elf $(BUILD)/$(PROG)_hw.bin

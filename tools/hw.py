@@ -14,6 +14,7 @@ Usage:
   python3 tools/hw.py peek ADDR [N]            # R: read N words (default 1), hex
   python3 tools/hw.py poke ADDR WORD [WORD...]  # W: write words
   python3 tools/hw.py runc PROG.hex            # upload a C program to 0x400, run it, print its output
+  python3 tools/hw.py runi PROG.hex            # same, but relay your keyboard <-> the program (interactive input)
   python3 tools/hw.py run ADDR                  # G: call a routine
 Options: --port /dev/cu.usbserial-XXXX  --timeout 2.0
 Exit 0 = OK / all HWCHECKS passed, non-zero = failure.
@@ -74,6 +75,35 @@ class Monitor:
         self._w(b"G" + self._le32(addr))
         k = self._r(1)
         if k != b"K": raise IOError(f"G 0x{addr:x} not acked: {k!r}")
+
+    def run_interactive(self, addr: int, end=0x4B, idle_timeout=30.0):
+        """G addr, then relay: your keystrokes -> the board's UART, the board's
+        output -> your terminal, until the monitor's 'K' ack. Puts stdin in raw
+        mode so the program's own echo is what you see."""
+        import time
+        self._w(b"G" + self._le32(addr))
+        infd = sys.stdin.fileno()
+        raw = sys.stdin.isatty()
+        if raw:
+            import termios, tty
+            saved = termios.tcgetattr(infd); tty.setcbreak(infd)
+        try:
+            last = time.time()
+            while time.time() - last < idle_timeout:
+                r, _, _ = select.select([self.fd, infd], [], [], 0.2)
+                if self.fd in r:
+                    for ch in os.read(self.fd, 256):
+                        if ch == end: return
+                        sys.stdout.write(chr(ch)); sys.stdout.flush(); last = time.time()
+                if infd in r:
+                    b = os.read(infd, 16)
+                    if b in (b"\x03", b"\x04"): return   # Ctrl-C / Ctrl-D
+                    self._w(b.replace(b"\n", b"\r\n") if False else b); last = time.time()
+            sys.stderr.write("\n[hw] idle timeout\n")
+        finally:
+            if raw:
+                import termios
+                termios.tcsetattr(infd, termios.TCSANOW, saved)
 
     def run_capture(self, addr: int, end=0x4B, timeout=5.0):
         """G addr, then read the program's UART output up to the monitor's 'K'
@@ -161,6 +191,8 @@ def main():
         addr = int(args[1], 0); m.write_words(addr, [int(x, 0) for x in args[2:]]); print("K"); return 0
     if cmd == "run":
         m.run(int(args[1], 0)); print("K"); return 0
+    if cmd == "runi":
+        words = load_hex(args[1]); m.write_words(0x400, words); m.run_interactive(0x400); print(); return 0
     if cmd == "runc":
         words = load_hex(args[1]); m.write_words(0x400, words)
         out = m.run_capture(0x400, timeout=float(args[2]) if len(args) > 2 else 5.0)

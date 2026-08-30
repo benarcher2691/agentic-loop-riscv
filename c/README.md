@@ -49,9 +49,10 @@ cd c
 make PROG=hello  hw      # -> Hello from C on Loop RISC-V!
 make PROG=fib    hw
 make PROG=primes hw      # watch the LEDs count primes as it prints
+make PROG=count  hwin     # INTERACTIVE: type how many primes you want, at the board
 ```
 Under the hood: `python3 tools/hw.py runc build/<prog>_hw.hex` writes the image to 0x400 (`W`),
-calls it (`G`), and captures everything the program prints up to the monitor's `K` ack. Programs
+calls it (`G`), and captures everything the program prints up to the monitor's `K` ack. The **`hwin`** target instead relays your keyboard <-> the program (`hw.py runi`), so a program that calls `get_uint()`/`getch()` (UART input, e.g. `examples/count.c`) can prompt you and read your answer live; Ctrl-C stops the relay. Programs
 must stay a returning subroutine (no `ebreak`), use the monitor's stack (don't touch `sp`), and
 fit in 0x400–0x1800 (5 KB, checked). If a run hangs, the program didn't `ret` — reset the board
 (reflash the monitor) to recover, per the monitor's contract.
