@@ -3,7 +3,19 @@
   "model": "openrouter/z-ai/glm-5.3-flash",
   "small_model": "openrouter/z-ai/glm-5.3-flash",
   "permission": {
-    "edit": "allow",
+    "edit": {
+      "*": "allow",
+      "Makefile": "deny",
+      "opencode.json": "deny",
+      "loop.sh": "deny",
+      "PROMPT.md": "deny",
+      "AGENTS.md": "deny",
+      ".opencode/**": "deny",
+      "boards/**": "deny",
+      "lib/**": "deny",
+      "rtl/emitter_uart.v": "deny",
+      "tools/**": "deny"
+    },
     "webfetch": "deny",
     "websearch": "deny",
     "bash": {
@@ -16,7 +28,21 @@
       "make pnr": "allow",
       "make stat": "allow",
       "make clean": "allow",
-      "make -s *": "allow",
+      "make -s check": "allow",
+      "make -s sim": "allow",
+      "make -s lint": "allow",
+      "make -s synth": "allow",
+      "make -s pnr": "allow",
+      "make -s stat": "allow",
+      "make -s clean": "allow",
+      "make -s prog": "deny",
+      "make -s prog *": "deny",
+      "make -s uart": "deny",
+      "make -s uart *": "deny",
+      "make -s hwtest": "deny",
+      "make -s hwtest *": "deny",
+      "make -s hwcheck": "deny",
+      "make -s hwcheck *": "deny",
       "make prog": "deny",
       "make uart": "deny",
       "make hwtest": "deny",
@@ -55,7 +81,11 @@
       "tail *": "allow",
       "grep *": "allow",
       "find *": "allow",
-      "wc *": "allow"
+      "wc *": "allow",
+      "make prog *": "deny",
+      "make uart *": "deny",
+      "make hwtest *": "deny",
+      "make hwcheck *": "deny"
     }
   }
 }

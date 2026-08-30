@@ -74,14 +74,25 @@ class Monitor:
         k = self._r(1)
         if k != b"K": raise IOError(f"G 0x{addr:x} not acked: {k!r}")
 
+MAX_HEX_BYTES = 1 << 20   # 1 MB cap — these are tiny build-generated dumps
+
 def load_hex(path):
-    """Parse a $writememh dump into a list of 32-bit words (ignores // comments, @addr)."""
+    """Parse a contiguous $writememh dump into a list of 32-bit words.
+    Raises ValueError on anything unexpected: an unparseable token, or an
+    @address directive (this loader assumes a dense dump from index 0 — a
+    sparse one would silently collapse to a wrong offset, so refuse it)."""
+    if os.path.getsize(path) > MAX_HEX_BYTES:
+        raise ValueError(f"{path}: larger than {MAX_HEX_BYTES} bytes — refusing")
     words = []
-    for line in open(path):
-        line = line.split("//")[0].strip()
-        for tok in line.split():
-            if tok.startswith("@"): continue
-            if re.fullmatch(r"[0-9a-fA-F]{1,8}", tok):
+    with open(path) as f:
+        for lineno, line in enumerate(f, 1):
+            line = line.split("//")[0].strip()
+            for tok in line.split():
+                if tok.startswith("@"):
+                    raise ValueError(f"{path}:{lineno}: @address directive unsupported "
+                                     "(loader assumes a dense dump from index 0)")
+                if not re.fullmatch(r"[0-9a-fA-F]{1,8}", tok):
+                    raise ValueError(f"{path}:{lineno}: not a hex word: {tok!r}")
                 words.append(int(tok, 16))
     return words
 
