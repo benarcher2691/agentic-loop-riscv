@@ -16,6 +16,20 @@ listening on /dev/cu.usbserial-12201; programming build/SOC.bin ...
 PASS: received 'Loop RISC-V' within 5.0s
 ```
 
+
+> **In one line:** a working 32-bit RISC-V CPU — decoder, ALU, register file, the full RV32I
+> instruction set, 6 KB of RAM, and a UART — written in Verilog *by a $0.075-per-million-token
+> language model driving itself in a loop*, running on a real \$20 FPGA board. It boots, blinks,
+> runs compiled C, and answers a serial monitor you can drive from your laptop. Every line of it
+> was produced task-by-task by the loop in [`../opencode-agentic-loop`](https://github.com/benarcher2691/opencode-agentic-loop),
+> supervised by a stronger model that reviewed, tested, and audited but wrote almost none of the RTL.
+>
+> **What you can do with it:** flash it (`make prog`), watch the LEDs, talk to it over USB
+> (`python3 tools/hw.py id` → `RV32`), upload and run programs on it (`hw.py`), run its self-test
+> suite on real silicon (`make hwcheck`), or compile your own C and watch it execute (`cd c && make PROG=hello run`).
+> It is a complete little computer, and a worked example of how far a cheap model gets inside a
+> good agentic loop.
+
 ## What was built
 
 | Module | Lines | What |
@@ -112,7 +126,8 @@ encodes the physics you told it about; the person holding the board is still par
 | `lib/riscv_assembly.v` | The Verilog-macro assembler (Bruno Levy, BSD-3) |
 | `rtl/emitter_uart.v` | UART transmitter (from the same tutorial, BSD-3) |
 | `boards/icestick.pcf` | Pin constraints; the `SOC` port names are fixed by it |
-| `tools/` | `uart.py` (serial reader), `hwtest.py` (flash + banner check), `equiv_tb.v` (co-sim bench) |
+| `tools/` | `uart.py` (serial reader), `hw.py` (monitor client), `hwtest.py`, `equiv_tb.v` (co-sim bench) |
+| `c/` | Bare-metal C toolchain flow + examples (hello / fib / primes) — see `c/README.md` |
 | `Makefile` | The verifier flow; `LC_BUDGET` |
 | `TASKS.md`, `PROMPT.md`, `AGENTS.md`, `PROGRESS.md`, `loop.sh`, `opencode.json`, `.opencode/` | The loop — identical in shape to the kit |
 | `docs/run-1-review.md` | Cost per iteration, code quality, robustness, the supervisor's log, lessons |
