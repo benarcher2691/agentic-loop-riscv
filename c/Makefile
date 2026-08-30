@@ -38,3 +38,20 @@ $(BUILD):
 	@mkdir -p $(BUILD)
 clean:
 	@rm -f $(BUILD)/cprog.hex $(BUILD)/*.elf $(BUILD)/*.bin $(BUILD)/csim.vvp
+
+# --- inputtest: the PROTECTED verifier for Phase 6 (UART input). Builds count.c,
+#     runs it in csim feeding canned input via +instr, and checks the program
+#     actually read the count and limited its output. Do not weaken this.
+inputtest: $(BUILD)
+	$(CC) $(CFLAGS) -T link.ld -o $(BUILD)/count.elf start.S rvc.c examples/count.c $(LIBGCC)
+	@$(OBJCOPY) -O binary $(BUILD)/count.elf $(BUILD)/count.bin
+	@python3 tobin2hex.py $(BUILD)/count.bin $(BUILD)/cprog.hex 1536
+	@iverilog -g2012 -Wall -Wno-timescale -o $(BUILD)/csim.vvp -s csim csim.v $(RTL)
+	@o6=$$(vvp -N $(BUILD)/csim.vvp +instr=6 2>/dev/null); \
+	 o3=$$(vvp -N $(BUILD)/csim.vvp +instr=3 2>/dev/null); p=0; \
+	 if echo "$$o6" | grep -q 'primes' && echo "$$o6" | grep -qw 13 && ! echo "$$o6" | grep -qw 17; \
+	   then p=$$((p+2)); else echo "FAIL N=6: want prompt + 13 present + 17 absent; got: [$$o6]"; fi; \
+	 if echo "$$o3" | grep -qw 5 && ! echo "$$o3" | grep -qw 7; \
+	   then p=$$((p+2)); else echo "FAIL N=3: want 5 present + 7 absent; got: [$$o3]"; fi; \
+	 echo "CHECKS TOTAL: $$p passed"; \
+	 test $$p -eq 4 && echo "INPUTTEST: PASS" || { echo "INPUTTEST: FAIL"; exit 1; }

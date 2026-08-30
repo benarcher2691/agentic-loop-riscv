@@ -6,6 +6,7 @@
     "edit": {
       "*": "allow",
       "Makefile": "deny",
+      "c/Makefile": "deny",
       "opencode.json": "deny",
       "loop.sh": "deny",
       "PROMPT.md": "deny",

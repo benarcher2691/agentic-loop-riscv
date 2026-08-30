@@ -2733,3 +2733,32 @@ fully green — note it now includes the `hwreset` stage — and both LC budgets
 
 - [x] **T6: Equiv drives the SoC (A8/A20).** *(Done 2026-08-29. Engineering finished by the iteration-7 handoff (tree TIMEOUT), verified and committed by this session. `tools/equiv_tb.v` rewritten (+283 lines): a full monitor session drives the SAME `RXD` into both dies — banner (12 frames, each checked against the expected string per die), `V` (identity "RV32"), a 1-byte `W` of 0x15 to the LED word 0x400004, an `R` of that word (0x15,0,0,0), a 3-instruction `G` routine at 0x500 (`ADDI x10,x0,0x15; SW x10,0x500(x0); RET`, lib-assembled with a hand-encoding cross-check per instruction class), code W+R readback word-by-word, the `G` call, data readback = 0x15, and a final live `V`. One serial receiver PER DUT with real-UART start-bit validation: half a bit into every falling edge, re-sample — only a line still LOW is a start bit. That validation is the load-bearing fix: the netlist's TXD (the provided emitter's combinational `data[0] | !(|data)` re-factored by yosys into a LUT tree) glitches low for ONE DELTA at frame end while the RTL (atomic 10-bit reg update) never does — a bare `@(negedge)` receiver catches the glitch and decodes the whole frame one bit-time early into garbage (the first cut failed exactly this way). The glitch is sub-clock (invisible to the every-cycle port check), far too short to disturb a real 115200-baud link, and the emitter is do-not-edit, so the faithful-receiver model in the bench is the right home. `exchange()` sends txlen bytes while both receivers collect rxlen reply bytes in parallel (a reply's start bit can land in the mid-stop of the previous frame) then byte-compares `rbuf_r` vs `rbuf_s` per byte. Vacuous prints → assertions: `mism == 0` across all 150000 cycles, `txd_edges > 200` (observed 241), `led_changes >= 1` (observed 1), final `LEDS == 5'b10101` on BOTH dies, TXD idle high on both; 84 checks in `build/equiv.log`, 0 failed. `TOTAL_CYCLES = 150000` (~12.5 ms at 12 MHz), `make equiv` = 45 s wall (budget 90 s), WATCHDOG 100 ms. RTL untouched: budgets unchanged (1165 unflattened, 1175 pnr, 33.20 MHz); sim total unchanged 16105 in 23 benches (equiv_tb lives in `tools/`, its checks count in the equiv log).)* Extend `tools/equiv_tb.v`: add a serial `send_byte` task (copy `tb/monitor_tb.v`'s) driving the SAME `RXD` stimulus into both SOCs: the banner, then `V`, a 1-byte `W` of `0x15` to `0x400004`, an `R` of that word, and a small `G` (upload 2–3 instructions that write a word and `RET`). Run ~150–200k cycles but keep `make equiv` under ~90 s. Convert the vacuous prints into assertions: zero port mismatches (existing), a minimum TXD transition count (>200), at least one LED change, final `LEDS == 5'b10101` on both, and the decoded TXD byte streams identical between RTL and netlist (one serial receiver per DUT, byte-compare).
 
+
+# Phase 6 — interactive UART input (C reads from the host)
+
+The SoC already receives UART: reading IO word `0x400020` returns `{23'd0, avail(bit 8), data(bits 7:0)}`
+and the read clears `avail` (see rtl/soc.v — the monitor's GETBYTE uses it). This phase adds C-side
+input so programs can prompt for a value. **No RTL change** — do NOT modify anything under `rtl/` or
+`tb/`. **The verifier for this phase is `make -C c inputtest`** (a protected target — do not edit
+`c/Makefile`), NOT `make check`. Run `make -C c inputtest` to check your work.
+
+- [ ] **UART input: getch/get_uint + csim input model + count.c.** Three edits, all under `c/`:
+  1. **Runtime** (`c/rvc.h`, `c/rvc.c`): add `char getch(void)` — poll `UART_RX` (0x400020) until bit 8
+     (`avail`) is set, then return bits[7:0] (the read clears `avail`). Add `unsigned get_uint(void)` —
+     repeatedly `getch()`, and for each decimal digit `'0'..'9'` echo it with `putch(c)` and accumulate
+     `n = n*10 + (c-'0')`; stop at the first non-digit (consume it and discard), return `n`.
+  2. **Sim input source** (`c/csim.v`): let the harness feed typed bytes. Read a run-time string with
+     `$value$plusargs("instr=%s", instr)`; treat its characters, followed by one trailing newline
+     (0x0A), as a queue of received bytes. Extend the IO read path so a read of `0x400020`
+     (`io & mem_addr[5:2]==4'b1000`) returns `{23'd0, 1'b1, next_byte}` and advances the queue when it
+     is non-empty, else `{23'd0, 1'b0, 8'd0}` (avail=0). Programs that never read input, and runs with
+     no `+instr`, must behave exactly as before (empty queue → avail always 0). Keep the existing RAM /
+     UART-sink / halt logic unchanged.
+  3. **Example** (`c/examples/count.c`, new): `#include "../rvc.h"`; in `main`: `puts_("primes? ");`
+     then `unsigned n = get_uint();` then `putch('\n');` then print the first `n` primes starting at 2,
+     each followed by a space (a prime is a number with no divisor 2..k where k*k<=it; use the same
+     no-mul style as `examples/primes.c` — `d*d<=n` and repeated subtraction for the remainder), then
+     `putch('\n'); return 0;`.
+  Acceptance: `make -C c inputtest` prints `INPUTTEST: PASS` (it feeds "6" → expects the 6th prime 13
+  present and 17 absent; feeds "3" → expects 5 present and 7 absent — so the program must genuinely read
+  the count and stop). `make PROG=hello run` (the existing standalone flow) must still work unchanged.
