@@ -3,6 +3,7 @@
 Everything below runs on the real board. The bitstream is a UART **monitor**: after a
 one-line banner it listens for binary commands (V/W/R/G) on FTDI channel B @115200.
 Nothing here is run by the agentic loop — these are the human checkpoints.
+Board reference: `docs/EB82-iCEstick_User_Manual.pdf` (Lattice EB82 — pinout, FTDI channels, LEDs).
 
 ## 0. Flash it
 ```sh

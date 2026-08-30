@@ -133,6 +133,9 @@ encodes the physics you told it about; the person holding the board is still par
 | `docs/run-1-review.md` | Cost per iteration, code quality, robustness, the supervisor's log, lessons |
 | `docs/decisions.md` | Architecture-decision log (D1/D2: the 32-bit-vs-64-bit cycle counter saga) |
 | `docs/audit-2026-08-29.md` | Four-reviewer audit: consolidated findings, mutation results, contracts & limits |
+| `docs/EB82-iCEstick_User_Manual.pdf` | Lattice iCEstick user manual (EB82): board pinout, FTDI channels, LEDs, headers |
+| `docs/Nyasulu-Introduction-to-Verilog.pdf` | Short beginner's Verilog tutorial (Nyasulu & Knight, Carleton U) — the subset used in `rtl/` |
+| `docs/Tuline-An-Introduction-to-Verilog.pdf` | Gentler dev-board-first Verilog intro (Tuline; Altera DE1, but it all transfers) |
 
 ## References and attribution
 
@@ -143,9 +146,25 @@ encodes the physics you told it about; the person holding the board is still par
   solution for every step — was deliberately kept out of the repo and away from the model: `TASKS.md`
   specifies each step with acceptance criteria, and the agent implemented from those. If you want to
   understand a RISC-V core rather than watch one get built, read the tutorial; it is excellent.
+  His [IceStick page](https://github.com/BrunoLevy/learn-fpga/blob/master/FemtoRV/TUTORIALS/IceStick.md)
+  covers setting up the board and toolchain.
 - **The RISC-V Instruction Set Manual, Volume I: Unprivileged ISA** — the RV32I base integer
   instruction set, chapter 2 (encodings, immediates, the `x0` rule).
   [riscv.org/specifications](https://riscv.org/specifications/ratified/).
+- **Lattice iCEstick Evaluation Kit User Manual (EB82)** — the board itself: FPGA pin mapping, the
+  FT2232H channels (B = UART), LEDs, PMOD/header pinouts. A copy is in
+  `docs/EB82-iCEstick_User_Manual.pdf`; `boards/icestick.pcf` is derived from it.
+- **Peter M. Nyasulu & J. Knight, *Introduction to Verilog*** (Carleton University) — a ~30-page
+  beginner's tutorial covering the synthesizable subset this repo uses: modules, `wire`/`reg`,
+  `always` blocks, blocking vs non-blocking, FSMs, test benches.
+  [PDF](https://www.cs.upc.edu/~jordicf/Teaching/secretsofhardware/VerilogIntroduction_Nyasulu.pdf);
+  a copy is in `docs/Nyasulu-Introduction-to-Verilog.pdf`.
+- **Andrew Tuline, *An Introduction to Verilog*** — an even gentler start: builds up from blinking
+  LEDs on a dev board (Altera DE1; the ideas transfer directly to the iCEstick).
+  [PDF](https://cseweb.ucsd.edu/~hadi/teaching/cs3220/01-2014fa/doc/verilog/An%20Introduction%20to%20Verilog.pdf);
+  a copy is in `docs/Tuline-An-Introduction-to-Verilog.pdf`.
+- **[HDLBits](https://hdlbits.01xz.net/wiki/Main_Page)** — interactive Verilog exercises with
+  instant simulation feedback; the fastest way to *practise* rather than read.
 - **iCE40 block-RAM initialisation delay:** Lattice application notes; the reference design above
   holds reset for 2¹⁶ clocks for the same reason.
 - **Tools:** Yosys, nextpnr and Project IceStorm by YosysHQ / Claire Wolf; Icarus Verilog by Stephen
