@@ -15,3 +15,18 @@ void put_hex(unsigned v){
   for (int i = 28; i >= 0; i -= 4) putch("0123456789abcdef"[(v>>i)&0xF]);
 }
 void leds(unsigned v){ mmio_w(LEDS, v & 0x1F); }
+char getch(void){
+  unsigned s;
+  do { s = mmio_r(UART_RX); } while (!(s & (1u<<8)));   // wait for avail
+  return (char)(s & 0xFFu);                             // the read cleared avail
+}
+unsigned get_uint(void){
+  unsigned n = 0;
+  for (;;){
+    char c = getch();
+    if (c < '0' || c > '9') break;   // first non-digit: consumed and discarded
+    putch(c);                        // echo
+    n = n*10u + (unsigned)(c - '0');
+  }
+  return n;
+}

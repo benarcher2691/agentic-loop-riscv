@@ -10,34 +10,6 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
 
    module to include into.
 
-- **T3: exact-match IO decode** (phase 5, T3): `rtl/soc.v` decodes the four IO words by
-   equality on `mem_addr[5:2]`; read default is now `32'd0` (LEDS read is an explicit
-   `ioLeds` arm); `storeNow` wire deleted. **The load-bearing contract decision: the UART
-   data port (0x400008) accepts FULL-WORD stores only (`mem_wmask == 4'b1111`)** — the
-   audit calls the monitor's ≥5-byte W at 0x400004 "walking into the UART" a bug, and
-   T4(b) pins `W 0x400008 1 <byte>` as must-NOT-transmit, while PUTBYTE sends with SW —
-   byte-lane gating alone cannot satisfy all three. T4 should bench-pin this (iowalk_tb
-   already does) rather than re-litigate the RTL. Bench tricks worth reusing: (1) to get
-   `rxAvail` pending across arbitrary CPU instructions WITHOUT the CPU polling RX (a poll
-   read consumes the byte), time the RX byte to complete inside the TX-busy window of two
-   back-to-back frames (~174 µs) — the CPU polls the side-effect-free status word instead;
-   (2) event-driven TXD recorder (log frames on negedge, flag strays past a threshold,
-   bounded wait on `txdN` before checking) cannot miss a start bit and cannot hang, unlike
-   a `recv_byte` that arms after the frame started; (3) the lib's `endASM` $finishes with
-   "Missing label initialization" unless label integers are pre-initialized with their
-   byte addresses (`integer S1 = 36, S2 = 52;`); (4) the monitor banner is 12 frames —
-   wait `txdN == 12` before sending commands. My hand LUI constant was wrong once again
-   (imm20 0x00400 → 0x004002B7, not 0x400002B7) — the EXP cross-check caught it pre-sim.
-   Budgets: unflattened 1158 → 1165 (SOC 57 → 65, +7 for the four 4-bit comparators and
-   the fourth read-mux arm), pnr 1163 → 1175, Fmax 33.20 MHz. 15823 → 15874 checks in
-   21 benches (ioexact_tb 47, iowalk_tb 4), equiv clean.
-   Advice for T4 (UART contracts, next): mostly bench/comment work — (a) RX overrun
-   last-writer-wins and the set-vs-clear race via bus forcing (uart_rx_tb technique);
-   document the policy at the `rxAvail` block; (b) the M4 kill is ALREADY in (wmask==1111
-   gate) — add the monitor `W 0x400008 1 <byte>` mid-PUTBYTE bench; (c) comment fixes:
-   `rtl/soc.v` uartValid hold rationale (A12) and the stale SRLI claim in `tb/io_tb.v`
-   (A16). Headroom: 15 LUT4 unflattened, 105 pnr LCs.
-
 - **Handoff captured by loop.sh — iteration 3 ended without ticking its task (tree: TIMEOUT). The session's last message, verbatim:**
 
   > Fetch drives `mem_rstrb`/`mem_addr` too, so forced strobes can corrupt a fetch — but a halted CPU (EBREAK → permanent EXECUTE freeze, no strobes) makes every forced cycle fully deterministic. Let me check the state encoding, then write the first bench:
@@ -128,3 +100,13 @@ lib/riscv_assembly.v) as the true independent cross-check; note the lib needs a 
    **That was the last unchecked task in TASKS.md** — the next session should reply `ALL TASKS
    DONE` unless new tasks are added.
 
+
+- **UART input: getch/get_uint + csim input model + count.c** (phase 6): all three edits under `c/`,
+   no RTL/tb changes. `getch` polls 0x400020 bit 8; `get_uint` echoes digits and stops at the first
+   non-digit; csim's `+instr=%s` queue (chars + one 0x0A) feeds reads of the RX word, popping on each
+   read, avail=0 when empty. inputtest PASS 4/4, hello run unchanged, make check green (budgets
+   untouched: 1165/1175 LCs, 33.20 MHz). Surprise: iverilog `$value$plusargs %s` stores the string
+   right-justified (last char in the LOWEST byte) — scan from the highest non-zero byte down to
+   rebuild it; also, regs used by an always block must be declared textually before it or iverilog
+   fails to bind. Advice: the no-plusarg run of an input-reading program blocks forever on avail=0
+   (csim TIMEOUT) — that is correct hardware behaviour, not a hang to fix.

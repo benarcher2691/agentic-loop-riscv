@@ -680,3 +680,31 @@
    for fault-injection benches; (4) `tRun`'s reset-preserves-registers trick lets one bench
    cover many permanent-halt cases without re-elaboration.
 
+- **T3: exact-match IO decode** (phase 5, T3): `rtl/soc.v` decodes the four IO words by
+   equality on `mem_addr[5:2]`; read default is now `32'd0` (LEDS read is an explicit
+   `ioLeds` arm); `storeNow` wire deleted. **The load-bearing contract decision: the UART
+   data port (0x400008) accepts FULL-WORD stores only (`mem_wmask == 4'b1111`)** — the
+   audit calls the monitor's ≥5-byte W at 0x400004 "walking into the UART" a bug, and
+   T4(b) pins `W 0x400008 1 <byte>` as must-NOT-transmit, while PUTBYTE sends with SW —
+   byte-lane gating alone cannot satisfy all three. T4 should bench-pin this (iowalk_tb
+   already does) rather than re-litigate the RTL. Bench tricks worth reusing: (1) to get
+   `rxAvail` pending across arbitrary CPU instructions WITHOUT the CPU polling RX (a poll
+   read consumes the byte), time the RX byte to complete inside the TX-busy window of two
+   back-to-back frames (~174 µs) — the CPU polls the side-effect-free status word instead;
+   (2) event-driven TXD recorder (log frames on negedge, flag strays past a threshold,
+   bounded wait on `txdN` before checking) cannot miss a start bit and cannot hang, unlike
+   a `recv_byte` that arms after the frame started; (3) the lib's `endASM` $finishes with
+   "Missing label initialization" unless label integers are pre-initialized with their
+   byte addresses (`integer S1 = 36, S2 = 52;`); (4) the monitor banner is 12 frames —
+   wait `txdN == 12` before sending commands. My hand LUI constant was wrong once again
+   (imm20 0x00400 → 0x004002B7, not 0x400002B7) — the EXP cross-check caught it pre-sim.
+   Budgets: unflattened 1158 → 1165 (SOC 57 → 65, +7 for the four 4-bit comparators and
+   the fourth read-mux arm), pnr 1163 → 1175, Fmax 33.20 MHz. 15823 → 15874 checks in
+   21 benches (ioexact_tb 47, iowalk_tb 4), equiv clean.
+   Advice for T4 (UART contracts, next): mostly bench/comment work — (a) RX overrun
+   last-writer-wins and the set-vs-clear race via bus forcing (uart_rx_tb technique);
+   document the policy at the `rxAvail` block; (b) the M4 kill is ALREADY in (wmask==1111
+   gate) — add the monitor `W 0x400008 1 <byte>` mid-PUTBYTE bench; (c) comment fixes:
+   `rtl/soc.v` uartValid hold rationale (A12) and the stale SRLI claim in `tb/io_tb.v`
+   (A16). Headroom: 15 LUT4 unflattened, 105 pnr LCs.
+

@@ -5,6 +5,7 @@
 #define UART_TX      (IO_BASE + 0x08)   // full-word store: low byte is transmitted
 #define UART_STATUS  (IO_BASE + 0x10)   // bit 9 = transmitter busy
 #define LEDS         (IO_BASE + 0x04)   // low 5 bits drive D1..D5
+#define UART_RX      (IO_BASE + 0x20)   // read: bit 8 = byte available, bits 7:0 = byte (read clears avail)
 static inline void mmio_w(unsigned a, unsigned v){ *(volatile unsigned*)a = v; }
 static inline unsigned mmio_r(unsigned a){ return *(volatile unsigned*)a; }
 void putch(char c);          // blocking, waits for the transmitter
@@ -12,4 +13,6 @@ void puts_(const char* s);   // string, no trailing newline
 void put_uint(unsigned v);   // decimal
 void put_hex(unsigned v);    // 8-digit hex
 void leds(unsigned v);
+char getch(void);            // blocking: waits for a received UART byte
+unsigned get_uint(void);     // reads a decimal number (echoing digits), stops at the first non-digit
 #endif
