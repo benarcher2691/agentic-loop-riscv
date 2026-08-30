@@ -85,7 +85,11 @@
       "make prog *": "deny",
       "make uart *": "deny",
       "make hwtest *": "deny",
-      "make hwcheck *": "deny"
+      "make hwcheck *": "deny",
+      "make hw": "deny",
+      "make hw *": "deny",
+      "make -s hw": "deny",
+      "make -s hw *": "deny"
     }
   }
 }

@@ -37,8 +37,24 @@ Add `examples/foo.c` with an `int main(void)`, include `"../rvc.h"`, `make PROG=
 under 6 KB (the Makefile checks). Avoid `printf`/malloc/floats — there's no libc and no FPU; use
 the `rvc.h` helpers. Multiply/divide work but are slow software routines.
 
-## Running C on the actual hardware (next step, not yet automated)
-These examples run in **simulation** on the real core. To run one on the iCEstick it must become
-the resident program: point `rtl/memory.v` at the compiled hex (a `$readmemh` init instead of the
-assembler-macro monitor), then `make prog`. That swap — and a linker variant that returns to the
-monitor so C can be uploaded over UART with `hw.py` instead of reflashed — is a clean future task.
+## Running C on the actual hardware
+No reflash needed — the monitor already on the board (`bitstreams/monitor-*.bin`) uploads and
+runs programs over UART. The `hw` target compiles a **returning, 0x400-linked** variant
+(`link_upload.ld` + `start_upload.S`: a subroutine that saves `ra`, runs `main`, and `ret`s to
+the monitor), uploads it with `hw.py`, runs it (`G`), and prints its UART output:
+
+```sh
+# board flashed with the monitor and plugged in:
+cd c
+make PROG=hello  hw      # -> Hello from C on Loop RISC-V!
+make PROG=fib    hw
+make PROG=primes hw      # watch the LEDs count primes as it prints
+```
+Under the hood: `python3 tools/hw.py runc build/<prog>_hw.hex` writes the image to 0x400 (`W`),
+calls it (`G`), and captures everything the program prints up to the monitor's `K` ack. Programs
+must stay a returning subroutine (no `ebreak`), use the monitor's stack (don't touch `sp`), and
+fit in 0x400–0x1800 (5 KB, checked). If a run hangs, the program didn't `ret` — reset the board
+(reflash the monitor) to recover, per the monitor's contract.
+
+The **standalone** flow above (`make PROG=x run`) still boots at 0 and `ebreak`-halts for pure
+simulation; the **`hw`** flow is the returning variant for the real board.

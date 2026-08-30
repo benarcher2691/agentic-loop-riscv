@@ -13,6 +13,7 @@ Usage:
   python3 tools/hw.py check                    # run build/hwprogs-*.{prog,expect}.hex
   python3 tools/hw.py peek ADDR [N]            # R: read N words (default 1), hex
   python3 tools/hw.py poke ADDR WORD [WORD...]  # W: write words
+  python3 tools/hw.py runc PROG.hex            # upload a C program to 0x400, run it, print its output
   python3 tools/hw.py run ADDR                  # G: call a routine
 Options: --port /dev/cu.usbserial-XXXX  --timeout 2.0
 Exit 0 = OK / all HWCHECKS passed, non-zero = failure.
@@ -73,6 +74,22 @@ class Monitor:
         self._w(b"G" + self._le32(addr))
         k = self._r(1)
         if k != b"K": raise IOError(f"G 0x{addr:x} not acked: {k!r}")
+
+    def run_capture(self, addr: int, end=0x4B, timeout=5.0):
+        """G addr, then read the program's UART output up to the monitor's 'K'
+        ack. (A program whose output contains a raw 0x4B byte would end early —
+        fine for text demos.) Returns the captured bytes before 'K'."""
+        self._w(b"G" + self._le32(addr))
+        out = bytearray(); deadline = __import__("time").time() + timeout
+        while __import__("time").time() < deadline:
+            r, _, _ = select.select([self.fd], [], [], max(0, deadline - __import__("time").time()))
+            if not r: continue
+            b = os.read(self.fd, 256)
+            for ch in b:
+                if ch == end:
+                    return bytes(out)
+                out.append(ch)
+        raise TimeoutError(f"G 0x{addr:x}: no 'K' ack within {timeout}s (got {bytes(out)!r})")
 
 MAX_HEX_BYTES = 1 << 20   # 1 MB cap — these are tiny build-generated dumps
 
@@ -144,6 +161,10 @@ def main():
         addr = int(args[1], 0); m.write_words(addr, [int(x, 0) for x in args[2:]]); print("K"); return 0
     if cmd == "run":
         m.run(int(args[1], 0)); print("K"); return 0
+    if cmd == "runc":
+        words = load_hex(args[1]); m.write_words(0x400, words)
+        out = m.run_capture(0x400, timeout=float(args[2]) if len(args) > 2 else 5.0)
+        sys.stdout.write(out.decode("ascii", "replace")); sys.stdout.flush(); return 0
     print(f"unknown command {cmd!r}\n{__doc__}"); return 2
 
 if __name__ == "__main__":
