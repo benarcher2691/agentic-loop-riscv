@@ -81,6 +81,26 @@ What to do about it is a project decision, not a machine one. The choices are:
 
 Do not "fix" a version-drift failure by editing RTL in a loop session. Escalate it.
 
+## OPEN DECISION — `LC_BUDGET` vs. the yosys version (as of 2026-09-10)
+
+**Status: undecided. Owner: the human / orchestrator, not a loop session.**
+
+`make check` is red on the M4 (yosys 0.69+post, 1185 LC) and green on the M2
+(yosys 0.68+post, 1175 LC) on the same commit. Until one of the following is
+chosen and done, the M4 is not a valid machine for this project's loop, and
+`TASKS.md` must not gain a "fix the budget" task for the cheap model:
+
+| Option | What changes | Consequence |
+|---|---|---|
+| **A. Raise `LC_BUDGET`** to 1190 or 1200 in the `Makefile` | one number, plus the reference block above re-recorded on the new yosys | Cheapest. Accepts that the budget tracks the synthesiser. The "5 cells of headroom" the project had is gone either way |
+| **B. Pin yosys** at 0.68+post `c12172fb` on the M4 | build yosys from source at that sha, `brew pin`; add to the install's `Brewfile`/stage as an exception | Keeps the numbers comparable across machines. Freezes the M4 on a yosys that will age; every future machine inherits the pin |
+| **C. Shrink the core** by ≥ 5 cells on 0.69 | RTL work, `TASKS.md` "Shrink the core" | The only option that improves the design. Slowest; needs a strong model, not the loop's cheap one |
+
+Recommendation from the 2026-09-10 investigation: **A**, because the count is a
+synthesiser output and a budget that breaks on every `brew upgrade` is a budget
+nobody will trust. Whoever decides: write the choice and the date here, update the
+`Makefile` and the reference block, and re-run `make check` on both machines.
+
 ## Checking a new machine
 
 ```sh
