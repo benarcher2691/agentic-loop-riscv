@@ -56,6 +56,9 @@ meaningful change. If it is red when you start, fixing it is your first task.
 ## Constraints
 
 - **No new dependencies, no downloads.** Everything is installed. No pip, brew, npm, curl, git clone.
+- The tool versions `make check` is proven on are in `TOOLCHAIN.md`. If `make stat` fails the
+  `LC_BUDGET` by a few cells and nothing in `rtl/` changed, that is yosys version drift: stop and
+  report it in `PROGRESS.md` instead of editing RTL to chase it.
 - Do not edit `Makefile`, `loop.sh`, `PROMPT.md`, `AGENTS.md`, `boards/`, `lib/`, `rtl/emitter_uart.v`, or anything under `.opencode/`.
 - **Never run `iceprog`, `make prog`, or `make uart`.** Hardware is a human step. You cannot see LEDs; trust the benches and the pnr report.
 - Do not rewrite files that already work. Make focused edits. Keep earlier benches passing.

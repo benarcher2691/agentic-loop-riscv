@@ -55,6 +55,10 @@ load → ~4 MIPS. 986 of 1,280 logic cells, Fmax 43 MHz. `git log` is one commit
   [Yosys](https://yosyshq.net/yosys/) for synthesis, [nextpnr](https://github.com/YosysHQ/nextpnr) for
   place & route, [Project IceStorm](https://clifford.at/icestorm/) (`icepack`, `iceprog`) for the bitstream
   and programming. No vendor tools anywhere.
+- **Exact versions `make check` is proven green on:** [`TOOLCHAIN.md`](TOOLCHAIN.md)
+  (`bash tools/toolchain.sh` prints yours). The `LC_BUDGET` cell count is a yosys output, so
+  a new machine with a newer yosys can fail `stat` on identical RTL — read that file before
+  touching RTL over a handful of cells.
 - **Not needed:** a RISC-V compiler. Programs are written with a RISC-V assembler implemented as
   Verilog macros (`lib/riscv_assembly.v`), so `ADDI(x1, x0, 5);` in an `initial` block assembles into
   the program memory. C support would need `riscv-gnu-toolchain` and is on the list for later.

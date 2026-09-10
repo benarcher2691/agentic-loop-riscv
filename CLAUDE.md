@@ -27,6 +27,11 @@ compare) → `hwreset` (the ONLY stage without FAST_SIM: pins the 65,536-cycle B
 → `stat` (unflattened + flattened LUT budgets, `LC_BUDGET=1180`). Human-only, denied to the loop:
 `make prog|uart|hwtest|hwcheck|hw`, `iceprog`, `tools/hw.py`.
 
+**Toolchain versions (`TOOLCHAIN.md`).** `make check` is proven green on the exact versions
+recorded there; `bash tools/toolchain.sh` prints this machine's. A `stat` failure by a few cells on
+a newer yosys is version drift, not an RTL regression — see the "Known drift" section (M4, yosys
+0.69: 1185 LC vs 1175 on the reference 0.68). Decide budget-vs-pin there; never shrink RTL to chase it.
+
 **Where to look.** `docs/decisions.md` (D1/D2: the 32-vs-64-bit cycle-counter saga and the ALU
 refactor that resolved it). `docs/audit-2026-08-29.md` (four-reviewer audit A1–A23 + the S-series
 security findings, all fixed/guarded/documented, with mutation results and Contracts & limits).
