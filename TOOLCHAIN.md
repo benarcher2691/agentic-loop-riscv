@@ -83,7 +83,27 @@ Do not "fix" a version-drift failure by editing RTL in a loop session. Escalate 
 
 ## OPEN DECISION — `LC_BUDGET` vs. the yosys version (as of 2026-09-10)
 
-**Status: undecided. Owner: the human / orchestrator, not a loop session.**
+**Status: DECIDED 2026-09-11 by the human — option B, pin yosys at 0.68.**
+Done on the M4 the same morning: `yosys@0.68` built from source (the 0.68 bottle
+is gone from ghcr.io) from homebrew-core's formula at `a9f2bc5e7b`, `brew pin`,
+Homebrew's `yosys` 0.69 removed. Result on the M4, same commit as the reference:
+
+```
+CHECKS TOTAL: 16105 passed in 23 benches
+  unflattened total: 1165 LUT4 (budget 1180)
+  ICESTORM_LC:    1175/   1280    91%
+  ICESTORM_RAM:     16/     16   100%
+Max frequency for clock 'CLK$SB_IO_IN_$glb_clk': 33.20 MHz (PASS at 12.00 MHz)
+CHECK: OK
+```
+
+Identical to the M2 block above, to the cell. `LC_BUDGET` stays 1180. The pin
+lives in the install repo (`m4-mac-mini-install`: stage 4b, `formula/yosys@0.68.rb`,
+and stage 14 refuses a machine whose `yosys -V` is not 0.68). Every future machine
+built from that repo inherits it, as the table warned. Moving the reference to a
+newer yosys is a deliberate act: re-record this file *and* change the pin there.
+
+Original status before the decision:
 
 `make check` is red on the M4 (yosys 0.69+post, 1185 LC) and green on the M2
 (yosys 0.68+post, 1175 LC) on the same commit. Until one of the following is
