@@ -84,6 +84,12 @@ Do not "fix" a version-drift failure by editing RTL in a loop session. Escalate 
 ## OPEN DECISION — `LC_BUDGET` vs. the yosys version (as of 2026-09-10)
 
 **Status: DECIDED 2026-09-11 by the human — option B, pin yosys at 0.68.**
+
+*Applied on both machines:* the M4 on 2026-09-11 (install stage 4b) and the
+**M2 on 2026-09-11 10:00**, same formula `yosys@0.68` from the install repo's local
+tap, pinned. Verified on the M2 afterwards: `yosys -V` unchanged, `make clean &&
+make check` → 16,105 checks, 1165 LUT4, 1175 LC. The reference block above stays
+valid; `brew upgrade` can no longer move yosys on either machine.
 Done on the M4 the same morning: `yosys@0.68` built from source (the 0.68 bottle
 is gone from ghcr.io) from homebrew-core's formula at `a9f2bc5e7b`, `brew pin`,
 Homebrew's `yosys` 0.69 removed. Result on the M4, same commit as the reference:
