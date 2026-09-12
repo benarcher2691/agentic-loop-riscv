@@ -52,7 +52,11 @@ pyserial. Everything but yosys is unpinned: `brew upgrade` moves those.
 **Hardware, same day:** `make hwtest` → `PASS: received 'Loop RISC-V'`; `make hwcheck` →
 `HWCHECKS: 4 passed, 0 failed` (alu 51 words, fibgcd 4, jumpbr 17, ldst 28) on the iCEstick
 at `/dev/cu.usbserial-212201`, bitstream `bitstreams/monitor-cf0551c.bin`
-(sha256 `3cd18342…7ab6b`). Simulation and silicon agree.
+(sha256 `3cd18342…7ab6b`). Simulation and silicon agree. C over the monitor:
+`hello` and `primes` print correctly; **manual, by the human:** `hw.py poke 0x400004 0x15`
+lit D1/D3/D5 (red, green, red), `0x0a` lit D2/D4, `peek` read back `0xa`, and the
+interactive `make PROG=count hwin` took a typed `5` and printed `2 3 5 7 11` — UART
+input proven on silicon.
 
 ## What each tool is used for
 
