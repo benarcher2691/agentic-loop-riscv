@@ -8,7 +8,8 @@ loop drives you one task at a time; read this file fully before doing anything.
 
 **Never finish a session with `make check` red.** `check` = simulate every `tb/*_tb.v`
 (self-checking, must print PASS) → yosys lint → yosys synth (no latches) → nextpnr place & route
-on the real part at 12 MHz (must fit, must meet timing). Run it before you start and after every
+on the real part at 12 MHz (must fit, must meet timing) → `equiv` (RTL vs netlist, 150k cycles)
+→ `hwreset` → `stat` (LUT budgets). `CLAUDE.md` has the authoritative description of each stage. Run it before you start and after every
 meaningful change. If it is red when you start, fixing it is your first task.
 
 ## Workflow for a task from TASKS.md
@@ -62,4 +63,4 @@ meaningful change. If it is red when you start, fixing it is your first task.
 - Do not edit `Makefile`, `loop.sh`, `PROMPT.md`, `AGENTS.md`, `boards/`, `lib/`, `rtl/emitter_uart.v`, or anything under `.opencode/`.
 - **Never run `iceprog`, `make prog`, or `make uart`.** Hardware is a human step. You cannot see LEDs; trust the benches and the pnr report.
 - Do not rewrite files that already work. Make focused edits. Keep earlier benches passing.
-- Resource budget: `make stat` prints logic-cell usage and Fmax and **fails above `LC_BUDGET` (900)** — the part has 1280 and the UART/IO need headroom. Share adders and shifters; do not add a comparator or adder where an existing one can be muxed.
+- Resource budget: `make stat` prints logic-cell usage and Fmax and **fails above `LC_BUDGET` (1180, see `Makefile`)** — the part has 1280 and the UART/IO need headroom. Share adders and shifters; do not add a comparator or adder where an existing one can be muxed.

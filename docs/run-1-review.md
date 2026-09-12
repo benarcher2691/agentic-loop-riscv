@@ -86,8 +86,8 @@ Attack surface is nil (UART transmit only; `RXD` unused). Robustness findings:
 ## 7. Next
 
 - **Morning:** plug the stick in, `iceprog bitstreams/demo-18fc833.bin`, `make uart` → `Loop RISC-V`, LEDs walking at 4 Hz.
-- Automate handoff capture in `loop.sh` (finding 4).
-- `brew tap riscv-software-src/riscv && brew install riscv-gnu-toolchain` unlocks the tutorial's steps 19–24: C programs, a UART receiver, running from SPI flash.
+- Automate handoff capture in `loop.sh` (finding 4). *Done.*
+- ~~`brew tap riscv-software-src/riscv && brew install riscv-gnu-toolchain`~~ *Done, via Homebrew's `riscv64-elf-gcc` instead (`c/README.md`): C programs and a UART receiver shipped; running from SPI flash is still parked.*
 - Optional third shrink (ALU shifter/mux tree) if the goal is the tutorial's ~300-LUT core.
 - The comparison experiment that is *not* worth running: glm-5.3 on this whole list (~$25). Worth running: glm-5.3 on just the two shrink tasks.
 

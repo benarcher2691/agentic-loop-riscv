@@ -10,7 +10,7 @@ it blindly, and knows exactly what would change the answer.
 
 **Decision.** Implement `RDCYCLE`/`RDCYCLEH` as a true 64-bit free-running counter
 (`{cycleh, cycles}` +1 every clk; 0xC00 reads the low word, 0xC80 the high word). This
-reverses D1. Both budget guards still pass at `LC_BUDGET=1150`: **1141 unflattened / 1139
+reverses D1. Both budget guards still pass at `LC_BUDGET=1150` (later raised to 1180 — see `docs/audit-2026-08-29.md`): **1141 unflattened / 1139
 flattened**, ~141 logic cells free (> the ~100 the phase-3 UART monitor needs), Fmax ~35 MHz.
 
 **Why it now fits (D1's blocker removed).** D1 was right that a 64-bit counter cannot fit

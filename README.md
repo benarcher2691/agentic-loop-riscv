@@ -35,22 +35,23 @@ PASS: received 'Loop RISC-V' within 5.0s
 | Module | Lines | What |
 |---|---|---|
 | `rtl/clockworks.v` | 48 | Clock divider + power-on reset (2¹⁶ cycles on hardware — see [the one bug](#the-one-bug-no-test-could-see)) |
-| `rtl/memory.v` | 72 | 1 KB byte-addressable RAM in block RAM, byte-write enables; holds the demo program |
+| `rtl/memory.v` | 185 | 6 KB byte-addressable RAM in block RAM, byte-write enables; holds the demo program |
 | `rtl/decoder.v` | 61 | Combinational RV32I decoder: 10 one-hot instruction classes, register fields, all five immediates |
-| `rtl/alu.v` | 70 | Shared 33-bit subtractor (SUB/EQ/LT/LTU), one right shifter (SLL by bit reversal), ADD, logic |
-| `rtl/processor.v` | 322 | 4-state FSM (FETCH_INSTR → FETCH_REGS → EXECUTE [→ LOAD]), 32×32 register file in BRAM, every RV32I integer instruction, EBREAK halts |
-| `rtl/soc.v` | 116 | CPU + RAM; IO space at address bit 22: LED register, UART TX (115200 8N1), UART status |
-| `tb/*_tb.v` | 2,400 | 13 self-checking benches, 4,897 checks: random ALU sweep, every load/store width and offset, fib/gcd/call-ret programs, a serial receiver model that decodes `TXD` |
+| `rtl/alu.v` | 107 | Shared 33-bit subtractor (SUB/EQ/LT/LTU), one right shifter (SLL by bit reversal), ADD, logic |
+| `rtl/processor.v` | 417 | 4-state FSM (FETCH_INSTR → FETCH_REGS → EXECUTE [→ LOAD]), 32×32 register file in BRAM, every RV32I integer instruction, EBREAK halts |
+| `rtl/soc.v` | 172 | CPU + RAM; IO space at address bit 22: LED register, UART TX/RX (115200 8N1), UART status |
+| `rtl/uart_rx.v`, `rtl/emitter_uart.v` | 91, 43 | UART receiver (2-flop synchroniser) and the vendored transmitter |
+| `tb/*_tb.v` | 6,200 | 23 self-checking benches, 16,105 checks: random ALU sweep, every load/store width and offset, fib/gcd/call-ret programs, a serial receiver model that decodes `TXD` |
 
 RV32I minus CSR/FENCE (ECALL/EBREAK halt; FENCE is a NOP). Three clocks per instruction, four for a
-load → ~4 MIPS. 986 of 1,280 logic cells, Fmax 43 MHz. `git log` is one commit per task.
+load → ~4 MIPS. 1,175 of 1,280 logic cells, Fmax 33.20 MHz (numbers from the pinned yosys 0.68 — see `TOOLCHAIN.md`). `git log` is one commit per task.
 
 ## Hardware and tools
 
 - **Board:** Lattice iCEstick (iCE40HX1K-TQ144, 12 MHz oscillator, five LEDs, FT2232H). On USB it shows
   two serial devices: `…usbserial-*0` is channel A (SPI flash programming, used by `iceprog`),
   `…usbserial-*1` is channel B, the UART on FPGA pins 8/9. `iceprog -t` reads the flash ID to confirm the link.
-- **Toolchain (all FOSS, `brew install yosys nextpnr-ice40 icestorm icarus-verilog`):**
+- **Toolchain (all FOSS, `brew install nextpnr-ice40 icestorm icarus-verilog`; yosys is the pinned 0.68 formula, see `TOOLCHAIN.md`):**
   [Icarus Verilog](https://steveicarus.github.io/iverilog/) for simulation,
   [Yosys](https://yosyshq.net/yosys/) for synthesis, [nextpnr](https://github.com/YosysHQ/nextpnr) for
   place & route, [Project IceStorm](https://clifford.at/icestorm/) (`icepack`, `iceprog`) for the bitstream
@@ -59,9 +60,9 @@ load → ~4 MIPS. 986 of 1,280 logic cells, Fmax 43 MHz. `git log` is one commit
   (`bash tools/toolchain.sh` prints yours). The `LC_BUDGET` cell count is a yosys output, so
   a new machine with a newer yosys can fail `stat` on identical RTL — read that file before
   touching RTL over a handful of cells.
-- **Not needed:** a RISC-V compiler. Programs are written with a RISC-V assembler implemented as
-  Verilog macros (`lib/riscv_assembly.v`), so `ADDI(x1, x0, 5);` in an `initial` block assembles into
-  the program memory. C support would need `riscv-gnu-toolchain` and is on the list for later.
+- **Assembler:** test programs are written with a RISC-V assembler implemented as Verilog macros
+  (`lib/riscv_assembly.v`), so `ADDI(x1, x0, 5);` in an `initial` block assembles into program memory.
+  **C is supported too**, via Homebrew's `riscv64-elf-gcc` — see `c/README.md` (`cd c && make PROG=hello hw`).
 
 ## The verifier — `make check`
 
@@ -73,7 +74,7 @@ Every loop iteration ends with this, and the loop trusts nothing else:
 | `lint` | Yosys `check -assert` | Undriven or multiply-driven nets |
 | `synth` | Yosys `synth_ice40` | A latch is inferred |
 | `pnr` | nextpnr, `hx1k-tq144`, board pins, 12 MHz | Does not fit or misses timing. Then `icepack` → `build/SOC.bin` |
-| `equiv` | Yosys netlist + Icarus | RTL and the synthesized netlist disagree on any output on any of 40,000 cycles (catches synthesis/simulation mismatches) |
+| `equiv` | Yosys netlist + Icarus | RTL and the synthesized netlist disagree on any output on any of 150,000 cycles (catches synthesis/simulation mismatches) |
 | `stat` | nextpnr log + unflattened Yosys | Logic cells over `LC_BUDGET` (measured unflattened too — see below) |
 
 The bench helpers are in `tb/check.vh`: `CHECK`, `CHECK_EQ` (4-state compare), `WATCHDOG`, `DONE`.
@@ -89,7 +90,7 @@ DUT's own output. Two verifier lessons worth stealing:
 ## Run it
 
 ```sh
-make check                 # ~60 s: the whole flow above; build/SOC.bin is the bitstream
+make check                 # ~50 s: the whole flow above; build/SOC.bin is the bitstream
 make prog                  # flash it (human step — the agent is denied iceprog)
 make uart                  # read the UART; Ctrl-C to stop
 make hwtest                # flash and expect the banner: PASS/FAIL

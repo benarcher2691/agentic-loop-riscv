@@ -8,16 +8,18 @@ Board reference: `docs/EB82-iCEstick_User_Manual.pdf` (Lattice EB82 — pinout, 
 ## 0. Flash it
 ```sh
 cd ~/sandbox/agentic-loop-riscv
-iceprog bitstreams/monitor-fa5210a.bin      # or: make prog   (builds+flashes build/SOC.bin)
+iceprog bitstreams/monitor-cf0551c.bin      # or: make prog   (builds+flashes build/SOC.bin)
 ```
-`bitstreams/monitor-fa5210a.bin` is the exact committed design (safe from the loop's build dir).
+`bitstreams/monitor-cf0551c.bin` is the exact committed design at `cf0551c`, built clean on the M4
+2026-09-12 (safe from the loop's build dir; `bitstreams/` is git-ignored, so re-create it with
+`make check && cp build/SOC.bin bitstreams/monitor-$(git rev-parse --short HEAD).bin` on a fresh clone).
 
 ## 1. Banner (open the port first, then flash — the banner prints once at reset)
 ```sh
 # terminal 1:
 make uart
 # terminal 2:
-iceprog bitstreams/monitor-fa5210a.bin
+iceprog bitstreams/monitor-cf0551c.bin
 ```
 Expect terminal 1 to print `Loop RISC-V` a few ms after `cdone: high`. Ctrl-C to stop.
 (After this the monitor is waiting for commands; the plain `make uart` reader can't send, so stop it.)
@@ -30,11 +32,14 @@ Flashes if needed, then drives the monitor over the UART: uploads each program i
 `build/hwprogs-*.prog.hex` to 0x400 (`W`), runs it (`G`), reads the result block at 0x800
 (`R`), and compares to `*.expect.hex`. Expect:
 ```
-ok   alu: 55 words
-ok   fibgcd: 5 words
-ok   jumpbr: ... words
-ok   ldst: ... words
+ok   alu: 51 words
+ok   fibgcd: 4 words
+ok   jumpbr: 17 words
+ok   ldst: 28 words
 HWCHECKS: 4 passed, 0 failed
+```
+(Those are the 2026-09-12 numbers on the M4; the word counts are the size of each result block.)
+```
 ```
 This is the same suite the simulation `tb/hwprogs_tb.v` checks, now proven on silicon. If sim
 and hardware ever disagree, that is the one bug class no testbench can catch (as the block-RAM
