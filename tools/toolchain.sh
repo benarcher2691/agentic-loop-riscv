@@ -14,6 +14,7 @@ v() { # v <label> <command...>: first line of output, or "MISSING"
 }
 echo "host                   $(hostname -s) $(uname -m) macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion))"
 v "yosys"          yosys -V
+v "yosys pin"      bash -c 'brew list --pinned 2>/dev/null | grep -qx "yosys@0.68" && echo "yosys@0.68 pinned (brew upgrade cannot move it)" || echo "NOT PINNED - see TOOLCHAIN.md"'
 v "nextpnr-ice40"  bash -c 'brew list --versions nextpnr-ice40 2>/dev/null || echo MISSING'
 v "icestorm"       bash -c 'brew list --versions icestorm 2>/dev/null || echo MISSING'
 v "icepack"        bash -c 'command -v icepack >/dev/null && echo present || echo MISSING'
